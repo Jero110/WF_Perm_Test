@@ -15,7 +15,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from wfpt.model import fit_xgb, predict_signal
+from WF_Perm_Test.wfpt.model import fit_xgb, predict_signal
 
 
 def walkforward_oos(

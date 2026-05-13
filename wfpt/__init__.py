@@ -1,12 +1,12 @@
 """Walk-Forward Permutation Test (à la Aronson) — paralelizado."""
 
-from wfpt.data import load_sp500, make_features
-from wfpt.permutation import permute_bars
-from wfpt.model import fit_xgb, predict_signal, default_xgb_params
-from wfpt.walkforward import walkforward_oos
-from wfpt.metrics import sharpe_annualized, profit_factor, cagr
-from wfpt.mcpt import run_wfpt
-from wfpt import plotting
+from WF_Perm_Test.wfpt.data import load_sp500, make_features
+from WF_Perm_Test.wfpt.permutation import permute_bars
+from WF_Perm_Test.wfpt.model import fit_xgb, predict_signal, default_xgb_params
+from WF_Perm_Test.wfpt.walkforward import walkforward_oos
+from WF_Perm_Test.wfpt.metrics import sharpe_annualized, profit_factor, cagr
+from WF_Perm_Test.wfpt.mcpt import run_wfpt
+from WF_Perm_Test.wfpt import plotting
 
 __all__ = [
     "load_sp500",

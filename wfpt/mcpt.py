@@ -23,10 +23,10 @@ import pandas as pd
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 
-from wfpt.data import make_features
-from wfpt.metrics import sharpe_annualized
-from wfpt.permutation import permute_bars
-from wfpt.walkforward import walkforward_oos
+from WF_Perm_Test.wfpt.data import make_features
+from WF_Perm_Test.wfpt.metrics import sharpe_annualized
+from WF_Perm_Test.wfpt.permutation import permute_bars
+from WF_Perm_Test.wfpt.walkforward import walkforward_oos
 
 
 @dataclass

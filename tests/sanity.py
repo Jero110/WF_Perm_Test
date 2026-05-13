@@ -13,11 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pandas as pd
 
-from wfpt.data import make_features
-from wfpt.permutation import permute_bars
-from wfpt.metrics import sharpe_annualized
-from wfpt.walkforward import walkforward_oos
-from wfpt.mcpt import run_wfpt
+from WF_Perm_Test.wfpt.data import make_features
+from WF_Perm_Test.wfpt.permutation import permute_bars
+from WF_Perm_Test.wfpt.metrics import sharpe_annualized
+from WF_Perm_Test.wfpt.walkforward import walkforward_oos
+from WF_Perm_Test.wfpt.mcpt import run_wfpt
 
 
 def synthetic_ohlc(n: int = 1500, seed: int = 0) -> pd.DataFrame:
