@@ -1,5 +1,5 @@
 ---
-[label](tests)title: "Test de Permutación Walk-Forward aplicado al S&P 500"
+title: "Test de Permutación Walk-Forward aplicado al S&P 500"
 subtitle: "Evaluación de significancia estadística de una estrategia con XGBoost"
 author: "Reynaldo Lazcano Armenta, Juan Pablo Cordero Mayorga y Jerónimo Deli Larios — ITAM, Simulación"
 date: "2026-05-14"
@@ -1006,19 +1006,6 @@ Como extensiones naturales del análisis se pueden considerar:
   dependen de regímenes de volatilidad podrían quedar penalizadas.
 - **No es recomendación financiera.** Este es un ejercicio académico; no
   implica que se deba operar la estrategia.
-
-# Anexo de código
-
-Todo el código necesario para reproducir el reporte está embebido en este
-mismo archivo Quarto. Para ejecutarlo desde la terminal:
-
-```bash
-quarto render reporte_wfpt_sp500.qmd
-```
-
-Esto produce un archivo HTML autocontenido `reporte_wfpt_sp500.html`. Si se
-quiere un PDF, se puede cambiar el `format` del YAML a `pdf` (requiere
-LaTeX instalado) o se puede usar `format: docx` para Word.
 
 ## Notas de reproducibilidad
 
