@@ -1,0 +1,1043 @@
+---
+[label](tests)title: "Test de Permutación Walk-Forward aplicado al S&P 500"
+subtitle: "Evaluación de significancia estadística de una estrategia con XGBoost"
+author: "Reynaldo Lazcano Armenta, Juan Pablo Cordero Mayorga y Jerónimo Deli Larios — ITAM, Simulación"
+date: "2026-05-14"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    fig-width: 9
+    fig-height: 5
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    fig.align: "center"
+---
+
+```{r setup, include=FALSE}
+# ──────────────────────────────────────────────────────────────────────────
+# Setup: instalación y carga de paquetes.
+# Esta primera celda asegura que todos los paquetes necesarios estén
+# disponibles. Si alguno no lo está, lo instala desde CRAN.
+# ──────────────────────────────────────────────────────────────────────────
+
+paquetes <- c(
+  "tidyverse", "quantmod", "xts", "zoo", "TTR",
+  "xgboost", "ggplot2", "scales", "patchwork",
+  "knitr", "kableExtra", "future", "furrr",
+  "doParallel", "foreach"
+)
+
+faltantes <- paquetes[!(paquetes %in% rownames(installed.packages()))]
+if (length(faltantes) > 0) {
+  install.packages(faltantes, repos = "https://cloud.r-project.org")
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(quantmod)
+  library(xts)
+  library(zoo)
+  library(TTR)
+  library(xgboost)
+  library(scales)
+  library(patchwork)
+  library(knitr)
+  library(kableExtra)
+  library(future)
+  library(furrr)
+})
+
+# Semilla maestra para reproducibilidad
+set.seed(42)
+
+# Tema de las gráficas
+theme_set(theme_minimal(base_size = 11) +
+          theme(plot.title = element_text(face = "bold", size = 12),
+                plot.subtitle = element_text(color = "grey40")))
+```
+
+# Introducción al problema
+
+En este reporte se analiza una pregunta importante dentro de las finanzas cuantitativas. **¿Una estrategia de trading basada en *machine learning* realmente encuentra una señal útil en el mercado? ¿O sus buenos resultados históricos podrían explicarse simplemente por azar?** Esta duda es relevante porque cuando se prueban muchos modelos, parámetros o configuraciones distintas, es común encontrar alguna estrategia que parece funcionar bien en datos pasados. Sin embargo, eso no significa que tenga capacidad predictiva real.
+
+Para estudiar este problema se entrenó un clasificador binario con **XGBoost**. El objetivo fue predecir si el índice **S&P 500** subiría o bajaría al día siguiente. La estrategia se evaluó mediante un **backtest walk-forward anclado**. De esta forma, el modelo se entrenó únicamente con la información disponible hasta cada momento y se evitó usar datos futuros.
+
+Después se aplicó un **test de permutación tipo Aronson**. Este método permite generar mercados sintéticos al alterar la estructura temporal original, pero conservando algunas propiedades estadísticas de las barras OHLC. Con esos mercados simulados se construyó una **distribución nula** del Sharpe Ratio. Luego, esta distribución se comparó con el Sharpe obtenido en los datos reales.
+
+El objetivo del trabajo no es encontrar la estrategia más rentable. Lo que se busca es evaluar si el desempeño observado puede considerarse diferente al azar desde un punto de vista estadístico. Esta diferencia es fundamental. Muchas estrategias que parecen exitosas en un backtest terminan siendo producto del sobreajuste. Es decir, funcionan bien en el pasado, pero no necesariamente capturan una relación real ni repetible en el mercado.
+
+
+# Marco teórico
+
+## El problema del backtest
+
+Un **backtest** es una simulación histórica de cómo le habría ido a una
+estrategia de trading en el pasado. La idea suena razonable: si funcionó
+ayer, quizás funcione mañana. El problema es que el pasado es **un sólo
+camino realizado**, y casi cualquier modelo suficientemente flexible puede
+ajustarse a él.
+
+Esto se conoce como **sobreajuste** *(overfitting)*: el modelo aprende los
+"accidentes" históricos del precio en vez de patrones genuinos.
+
+Una forma de pensarlo: si yo pruebo 100 estrategias completamente
+aleatorias sobre los mismos datos, **la mejor de las 100 se va a ver
+fantástica** sólo por suerte. Si el analista únicamente reporta esa,
+estará presentando ruido como si fuera señal.
+
+## Validación walk-forward
+
+En *machine learning* tradicional es común dividir los datos de forma aleatoria en entrenamiento y prueba. En series de tiempo financieras esto no es adecuado. Si se entrena el modelo con datos de 2018 y luego se prueba con datos de 2010, se estaría usando información del futuro para predecir el pasado. A esto se le conoce como *look-ahead bias*.
+
+Por esta razón se utiliza el enfoque **walk-forward**. En este método el tiempo siempre avanza en orden. Primero se entrena el modelo con los datos disponibles hasta el día $t$. Después se predice el bloque siguiente $[t, t+\Delta]$. Luego se vuelve a entrenar el modelo con los datos disponibles hasta $t+\Delta$ y se predice el siguiente bloque. Este proceso se repite hasta cubrir todo el periodo de evaluación.
+
+En este trabajo se utiliza la variante **anclada** o *anchored*. Esto significa que la ventana de entrenamiento siempre inicia en el primer día de la muestra y va creciendo con el tiempo. En cada punto $t$, el modelo se vuelve a entrenar usando toda la información histórica disponible hasta ese momento.
+
+
+## Datos OHLCV
+
+Trabajamos con **barras diarias** del S&P 500. Cada fila representa un día
+de operación bursátil y trae cinco números:
+
+| Columna     | Significado                                |
+|-------------|--------------------------------------------|
+| **Open**    | precio al que abrió el mercado             |
+| **High**    | precio máximo del día                      |
+| **Low**     | precio mínimo del día                      |
+| **Close**   | precio al que cerró el mercado             |
+| **Volume**  | cantidad de acciones operadas en el día    |
+
+Estas son nuestras **velas**.
+
+En todo el reporte trabajamos con **logaritmo de precios** y **log-retornos**
+en lugar de precios crudos. Las dos razones principales:
+
+1. **Aditividad.** Los log-retornos suman: el log-retorno de un periodo
+   largo es la suma de los log-retornos diarios. Esto facilita reconstruir
+   trayectorias.
+2. **Mejor comportamiento estadístico.** Los retornos diarios son
+   aproximadamente simétricos en torno a cero y se aproximan al porcentaje
+   de cambio para movimientos pequeños:
+   $$r_t = \log\!\left(\frac{C_t}{C_{t-1}}\right) \approx \frac{C_t - C_{t-1}}{C_{t-1}}.$$
+
+## Feature engineering
+
+El modelo XGBoost no observa los precios directamente. Le damos
+**características** *(features)* que resumen la historia reciente:
+
+| Feature      | Cálculo                                              |
+|--------------|------------------------------------------------------|
+| `ret_lag_k`  | log-retorno de hace $k$ días, $k=1,\dots,5$          |
+| `vol_5`      | desviación estándar de los retornos de los últimos 5 días |
+| `vol_21`     | desviación estándar de los retornos de los últimos 21 días |
+| `rsi_14`     | RSI de 14 periodos (indicador de sobrecompra/sobreventa) |
+| `ma_ratio`   | $\text{MA}_5 / \text{MA}_{21} - 1$ (cruce de medias móviles) |
+
+La **variable objetivo** $y_t$ es el signo del retorno del día siguiente:
+$$y_t = \mathrm{signo}(r_{t+1}) \in \{-1, +1\}.$$
+
+Y la **señal de trading** del modelo se traduce directamente al P&L:
+$$\text{PnL}_t = \mathrm{señal}_t \cdot r_{t+1}, \quad \mathrm{señal}_t \in \{-1, +1\}.$$
+
+Si el modelo predice "subirá" nos ponemos largos (+1) y ganamos $r_{t+1}$;
+si predice "bajará" nos ponemos cortos (-1) y ganamos $-r_{t+1}$.
+
+## XGBoost en pocas palabras
+
+**XGBoost** *(eXtreme Gradient Boosting)* es un algoritmo basado en
+**árboles de decisión con boosting**. La idea, intuitivamente, es:
+
+1. Se entrena un primer árbol simple.
+2. Se identifican los errores de ese árbol.
+3. Se entrena un segundo árbol que intenta **corregir** esos errores.
+4. Se repite, sumando pequeños árboles correctores hasta que el modelo
+   conjunto sea bueno.
+
+Lo usamos como **clasificador binario**: la salida es la probabilidad de
+que el mercado suba mañana. Si esa probabilidad es $\geq 0.5$ emitimos señal
+$+1$ (largo), si no, $-1$ (corto). Para evitar sobreajuste usamos
+hiperparámetros conservadores y **fijos en todos los folds y permutaciones**:
+si afináramos los parámetros en cada fold inflaríamos artificialmente la
+probabilidad de error tipo I del test.
+
+## Mecánica de trading: ¿qué hace el modelo en la práctica?
+
+Es importante distinguir dos momentos completamente separados en la vida del
+modelo: el **entrenamiento** y la **ejecución OOS**. Tienen objetivos distintos
+y usan la información de forma diferente.
+
+### Durante el entrenamiento: el modelo aprende signos
+
+En cada fold del walk-forward, el modelo recibe las features $X_t$ y aprende
+a predecir el **signo** del retorno del día siguiente:
+
+$$y_t = \mathrm{signo}(r_{t+1}) \in \{-1,\, +1\}$$
+
+El modelo **nunca ve retornos directamente** — solo ve si el mercado subió o
+bajó. El algoritmo XGBoost ajusta sus parámetros internos minimizando los
+errores de clasificación: ¿predije $+1$ cuando debía ser $-1$? Eso es un
+error. ¿Predije $-1$ cuando el mercado sí bajó? Eso es un acierto. El
+entrenamiento es un problema de clasificación puro.
+
+### Durante la ejecución OOS: del clasificador al P&L
+
+Una vez que el modelo está entrenado y se aplica en el periodo
+fuera de muestra, **ya no hay aprendizaje**. Lo que ocurre es:
+
+1. Se observan las features $X_t$ con datos disponibles al cierre del día $t$.
+2. El modelo emite una señal $\hat{s}_t \in \{-1,\, +1\}$.
+3. Se ejecuta la posición: largo si $\hat{s}_t = +1$, corto si $\hat{s}_t = -1$.
+4. Al cierre de $t+1$ se liquida la posición y se registra el retorno de la estrategia:
+
+$$r_t^{\text{strat}} = \hat{s}_t \times r_{t+1}^{\text{mercado}}$$
+
+Aquí está el cambio de lenguaje clave: ya no comparamos la señal con un signo
+para ver si acertamos — la **multiplicamos por el retorno real** para saber
+cuánto ganamos o perdimos. La tabla siguiente resume la diferencia:
+
+| | Entrenamiento | Ejecución OOS |
+|---|---|---|
+| La señal es | $+1$ o $-1$ | $+1$ o $-1$ |
+| Se compara con | $\mathrm{signo}(r_{t+1})$ para aprender | — |
+| Se multiplica por | — | $r_{t+1}$ para calcular P&L |
+| Resultado | actualización de pesos | retorno del día |
+
+La razón por la que esto funciona aritméticamente es simple: si el modelo
+acertó el signo, $\hat{s}_t$ y $r_{t+1}$ tienen el mismo signo, por lo que
+su producto es **positivo**. Si se equivocó, tienen signos opuestos y el
+producto es **negativo**. Así, la curva de equity acumulada refleja
+directamente la calidad predictiva del clasificador, expresada en unidades
+financieras (retornos porcentuales).
+
+### El ciclo completo cada día
+
+```
+Cierre de t:
+  features(X_t)  →  modelo  →  señal +1 o -1  →  ejecuta orden
+
+Cierre de t+1:
+  liquida posición  →  PnL_t = señal_t × r_{t+1}  →  registra retorno
+
+Repite al día siguiente.
+```
+
+### ¿Por qué sufre la estrategia en mercados alcistas?
+
+El S&P 500 tiene un sesgo alcista histórico de ~10% anual. Cada vez que el
+modelo emite $-1$ en un día que el mercado sube, no solo deja de ganar sino
+que *pierde activamente* por ir corto. Una estrategia *long-only* (siempre
+$+1$, sin modelo) habría capturado todo el rally de 2005–2024 sin ningún
+esfuerzo predictivo. Esto no significa que el modelo esté mal programado:
+significa que las features técnicas disponibles en OHLCV público **no tienen
+suficiente poder predictivo** para justificar los riesgos de ir corto en uno
+de los mercados más eficientes del mundo.
+
+## Ratio de Sharpe
+
+El **Sharpe Ratio** mide cuánto rendimiento se obtiene por cada unidad de
+riesgo (volatilidad):
+$$\text{Sharpe} = \frac{\bar r}{\sigma}.$$
+
+Para anualizarlo (convertir de diario a anual) multiplicamos por la raíz del
+número de periodos por año. En finanzas se usa $252$, que es
+aproximadamente el número de días bursátiles en un año:
+$$\boxed{\;\text{Sharpe}_{\text{anualizado}} = \sqrt{252}\,\frac{\bar r_{\text{diario}}}{\sigma_{\text{diario}}}\;}$$
+
+Como referencia rápida:
+
+| Sharpe anualizado | Interpretación                                        |
+|-------------------|-------------------------------------------------------|
+| $< 0$             | pierde dinero en promedio                             |
+| $0 - 0.5$         | bajo, probablemente no vale la pena                   |
+| $0.5 - 1.0$       | aceptable para una estrategia real                    |
+| $1.0 - 2.0$       | bueno, difícil de lograr de manera consistente        |
+| $> 2.0$           | excelente (sospechoso si sólo aparece en backtesting) |
+
+Usamos el Sharpe como **estadístico de prueba** del test de permutación.
+
+## Test de permutación de Aronson
+
+El test de permutación es una técnica no paramétrica que **construye la
+distribución nula del estadístico de manera empírica**, sin asumir ninguna
+distribución teórica. La lógica:
+
+1. Calculamos el estadístico sobre los datos reales: $T_{\text{real}}$.
+2. **Destruimos** cualquier estructura temporal de los datos mediante
+   permutaciones.
+3. Calculamos el estadístico sobre cada conjunto permutado:
+   $T_{\text{perm}}^{(i)}$, $i=1,\dots,n$.
+4. La distribución empírica de los $T_{\text{perm}}^{(i)}$ es la
+   **distribución nula**.
+5. El **p-valor** es la fracción de veces que el estadístico permutado fue
+   igual o mayor al real.
+
+Las hipótesis del test son:
+
+- $H_0$: el modelo no captura una señal predictiva real; cualquier desempeño
+  observado puede explicarse por azar bajo una trayectoria de mercado sin
+  estructura temporal explotable.
+- $H_1$: el modelo obtiene un desempeño fuera de muestra suficientemente
+  alto como para ser poco probable bajo $H_0$, lo que sugeriría la presencia
+  de señal predictiva.
+
+El truco es **cómo se permuta**. No se pueden simplemente revolver los precios de cierre, porque eso destruye la distribución de los retornos individuales: la volatilidad
+cambia, los gaps cambian, los rangos intradía cambian. Aronson propone
+descomponer cada barra OHLC en componentes aditivos en log-espacio y
+permutar **cada componente por separado**.
+
+## Descomposición y recomposición de barras en log-espacio
+
+Cada barra diaria se descompone en cuatro componentes independientes en
+log-espacio:
+$$
+\begin{aligned}
+\text{gap}_t  &= \log O_t - \log C_{t-1}                  &&\text{(apertura vs.\ cierre del día previo)}\\
+\text{body}_t &= \log C_t - \log O_t                      &&\text{(cuerpo de la vela: subió o bajó)}\\
+\text{high}_t &= \log H_t - \log\max(O_t, C_t) \;\;\;     &&\text{(sombra superior; siempre } \geq 0)\\
+\text{low}_t  &= \log\min(O_t, C_t) - \log L_t            &&\text{(sombra inferior; siempre } \geq 0)
+\end{aligned}
+$$
+
+Trabajar en log-espacio permite que estas piezas se sumen aditivamente y
+que la trayectoria se pueda reconstruir como una caminata. Una vez
+permutados los cuatro vectores de manera independiente, **reconstruimos**
+secuencialmente partiendo del último cierre real del periodo de
+entrenamiento $C_{t-1}$:
+
+$$
+\begin{aligned}
+\log O_t &= \log C_{t-1} + \text{gap}_t \\
+\log C_t &= \log O_t + \text{body}_t \\
+\log H_t &= \max(\log O_t, \log C_t) + \text{high}_t \\
+\log L_t &= \min(\log O_t, \log C_t) - \text{low}_t \\
+\end{aligned}
+$$
+
+El resultado es un "universo paralelo" donde:
+
+- la distribución marginal de retornos, gaps, cuerpos y rangos se conserva,
+- la volatilidad típica se mantiene parecida,
+- pero **el orden temporal y cualquier patrón explotable se eliminan**.
+
+Por eso esta permutación es más cuidadosa que un *shuffle* ingenuo de los
+precios de cierre.
+
+## Algoritmo de permutación, paso a paso
+
+1. Definir el inicio del periodo fuera de muestra.
+2. **Mantener intacto** el periodo inicial de entrenamiento (la pre-OOS).
+3. Descomponer las barras OHLC en componentes logarítmicos.
+4. Permutar aleatoriamente los componentes del periodo OOS, **cada uno por
+   separado**.
+5. Reconstruir una nueva trayectoria OHLC sintética.
+6. Recalcular los features sobre la trayectoria permutada.
+7. Correr el mismo walk-forward anclado.
+8. Calcular el Sharpe OOS de esa permutación.
+9. Repetir muchas veces para construir la distribución nula.
+
+## Estadístico de prueba y cálculo del p-valor
+
+El estadístico es el Sharpe Ratio anualizado de los retornos OOS:
+$$T_{\text{real}} = \sqrt{252}\,\frac{\bar r_{\text{OOS,real}}}{s_{\text{OOS,real}}},
+\qquad
+T_{\text{perm}}^{(i)} = \sqrt{252}\,\frac{\bar r_{\text{OOS,perm}}^{(i)}}{s_{\text{OOS,perm}}^{(i)}}.$$
+
+El p-valor se calcula con la **corrección $+1$**, que evita que un número
+finito de simulaciones produzca un p-valor exactamente cero (lo cual sería
+imposible de interpretar):
+$$\hat p = \frac{1 + \#\{i: T_{\text{perm}}^{(i)} \geq T_{\text{real}}\}}{1 + n}.$$
+
+# Metodología y simulación
+
+## Configuración del experimento
+
+Los parámetros del experimento se definen aquí. **`N_PERMUTATIONS`** es la
+única perilla "computacionalmente costosa": cuanto más alto, más preciso
+es el p-valor pero más tarda la corrida.
+
+```{r config}
+# ── Parámetros globales ──────────────────────────────────────────────────
+RNG_SEED        <- 42       # Semilla maestra para reproducibilidad
+TRAIN_WINDOW    <- 252 * 4  # 4 años de datos para el primer entrenamiento
+STEP            <- 21       # Re-entrenamos cada ~21 días (1 mes bursátil)
+PERIODOS_ANIO   <- 252      # Días bursátiles por año
+
+# Para una versión funcional usamos 100 permutaciones.
+# Para un análisis más robusto se podría aumentar a 500 o 1000,
+# pero eso multiplica drásticamente el tiempo de cómputo.
+N_PERMUTATIONS  <- 100
+
+# Núcleos para paralelizar (queda 1 libre para no saturar el sistema)
+N_WORKERS <- max(1, parallel::detectCores() - 1)
+
+set.seed(RNG_SEED)
+```
+
+## Descarga de los datos del S&P 500
+
+Descargamos 20 años de barras diarias del S&P 500 desde Yahoo Finance,
+usando el paquete `quantmod`. Esta es la misma fuente que usa el notebook
+original en Python.
+
+```{r download_data, cache=TRUE}
+# ── Descarga del S&P 500 (^GSPC) ─────────────────────────────────────────
+gspc_xts <- getSymbols("^GSPC",
+                       from = "2005-01-01",
+                       to   = "2024-12-31",
+                       auto.assign = FALSE)
+
+df <- data.frame(date = index(gspc_xts), coredata(gspc_xts))
+colnames(df) <- c("date", "Open", "High", "Low", "Close", "Volume", "Adjusted")
+df <- df %>% select(date, Open, High, Low, Close, Volume) %>% drop_na()
+
+cat("Barras totales:", nrow(df), "\n")
+cat("Periodo:       ", as.character(df$date[1]), " → ",
+    as.character(df$date[nrow(df)]), "\n")
+```
+
+## Funciones de soporte (todo en R puro)
+
+A continuación definimos las funciones que replican lo que hacía el
+notebook de Python. Las dejamos directamente en el reporte para que el
+documento sea **autocontenido**.
+
+```{r helpers}
+# ── 1) Construcción de features ──────────────────────────────────────────
+build_features <- function(df) {
+  close   <- df$Close
+  log_ret <- c(NA, diff(log(close)))
+
+  feats <- data.frame(date = df$date)
+  for (k in 1:5) feats[[paste0("ret_lag_", k)]] <- dplyr::lag(log_ret, k)
+  feats$vol_5    <- TTR::runSD(log_ret, n = 5)
+  feats$vol_21   <- TTR::runSD(log_ret, n = 21)
+  feats$rsi_14   <- TTR::RSI(close, n = 14)
+  ma5            <- TTR::runMean(close, n = 5)
+  ma21           <- TTR::runMean(close, n = 21)
+  feats$ma_ratio <- ma5 / ma21 - 1
+
+  fwd_ret <- dplyr::lead(log_ret, 1)
+  y       <- ifelse(fwd_ret >= 0, 1L, -1L)
+
+  ok <- complete.cases(feats[, -1]) & !is.na(fwd_ret)
+  list(
+    X     = as.matrix(feats[ok, -1]),
+    y     = y[ok],
+    r     = fwd_ret[ok],
+    dates = feats$date[ok]
+  )
+}
+
+# ── 2) Hiperparámetros XGBoost (fijos en todos los folds) ────────────────
+xgb_params <- list(
+  objective        = "binary:logistic",
+  eval_metric      = "logloss",
+  max_depth        = 4,
+  eta              = 0.05,
+  subsample        = 0.8,
+  colsample_bytree = 0.8,
+  lambda           = 1,
+  nthread          = 1,
+  verbosity        = 0
+)
+N_ROUNDS <- 120
+
+# ── 3) Walk-forward anclado ──────────────────────────────────────────────
+walkforward_oos <- function(X, y, fwd_ret, train_window, step = 21) {
+  n <- nrow(X)
+  if (train_window >= n) stop("train_window >= longitud de datos")
+
+  pnls       <- numeric(0)
+  pnl_idx    <- integer(0)
+  t <- train_window
+
+  while (t < n) {
+    end   <- min(t + step, n)
+    X_tr  <- X[1:t, , drop = FALSE]
+    y_bin <- as.integer(y[1:t] > 0)
+    X_te  <- X[(t + 1):end, , drop = FALSE]
+
+    dtrain <- xgb.DMatrix(data = X_tr, label = y_bin)
+    mdl    <- xgb.train(params = xgb_params, data = dtrain, nrounds = N_ROUNDS)
+
+    proba  <- predict(mdl, X_te)
+    sig    <- ifelse(proba >= 0.5, 1, -1)
+    pnls   <- c(pnls, sig * fwd_ret[(t + 1):end])
+    pnl_idx <- c(pnl_idx, (t + 1):end)
+    t <- end
+  }
+  list(returns = pnls, idx = pnl_idx)
+}
+
+# ── 4) Métricas ──────────────────────────────────────────────────────────
+sharpe_anualizado <- function(r, periodos = 252) {
+  r <- r[!is.na(r)]
+  if (length(r) < 2 || sd(r) == 0) return(0)
+  sqrt(periodos) * mean(r) / sd(r)
+}
+
+profit_factor <- function(r) {
+  r <- r[!is.na(r)]
+  ganancias <- sum(r[r > 0])
+  perdidas  <- -sum(r[r < 0])
+  if (perdidas == 0) return(if (ganancias > 0) Inf else 0)
+  ganancias / perdidas
+}
+
+cagr <- function(r, periodos = 252) {
+  r <- r[!is.na(r)]
+  if (length(r) == 0) return(0)
+  exp(sum(r) / (length(r) / periodos)) - 1
+}
+
+# ── 5) Permutación tipo Aronson de barras OHLC ───────────────────────────
+permute_bars <- function(df, start_idx, seed) {
+  n <- nrow(df)
+  if (!(start_idx >= 2 && start_idx <= n))
+    stop("start_idx fuera de rango")
+
+  set.seed(seed)
+
+  o <- log(df$Open);  h <- log(df$High)
+  l <- log(df$Low);   c <- log(df$Close)
+
+  gap        <- numeric(n);  gap[1] <- 0
+  gap[2:n]   <- o[2:n] - c[1:(n - 1)]
+  body       <- c - o
+  high_w     <- h - pmax(o, c)
+  low_w      <- pmin(o, c) - l
+
+  perm_len <- n - start_idx + 1
+  pgap  <- sample(perm_len)
+  pbody <- sample(perm_len)
+  phigh <- sample(perm_len)
+  plow  <- sample(perm_len)
+
+  gap_oos  <- gap[start_idx:n][pgap]
+  body_oos <- body[start_idx:n][pbody]
+  high_oos <- high_w[start_idx:n][phigh]
+  low_oos  <- low_w[start_idx:n][plow]
+
+  log_o <- o; log_h <- h; log_l <- l; log_c <- c
+  prev_close <- log_c[start_idx - 1]
+
+  for (i in seq_len(perm_len)) {
+    idx          <- start_idx + i - 1
+    log_o[idx]   <- prev_close + gap_oos[i]
+    log_c[idx]   <- log_o[idx] + body_oos[i]
+    top          <- max(log_o[idx], log_c[idx])
+    bot          <- min(log_o[idx], log_c[idx])
+    log_h[idx]   <- top + high_oos[i]
+    log_l[idx]   <- bot - low_oos[i]
+    prev_close   <- log_c[idx]
+  }
+
+  out          <- df
+  out$Open     <- exp(log_o)
+  out$High     <- exp(log_h)
+  out$Low      <- exp(log_l)
+  out$Close    <- exp(log_c)
+  out
+}
+```
+
+## Vista preliminar de los datos
+
+Antes de meter el modelo, vale la pena ver cómo se ve el log-precio y los
+log-retornos diarios. Nótese que la volatilidad **no es constante**. Hay
+periodos calmos y periodos turbulentos (la crisis de 2008, el shock COVID
+de 2020, etc.).
+
+```{r price_plot, fig.height=5}
+log_close <- log(df$Close)
+log_ret   <- c(NA, diff(log_close))
+
+p1 <- ggplot(df, aes(date, log_close)) +
+  geom_line(color = "steelblue", linewidth = 0.4) +
+  labs(title = "S&P 500 — Log-precio diario",
+       x = NULL, y = "log(Close)")
+
+p2 <- ggplot(df, aes(date, log_ret)) +
+  geom_line(color = "grey50", linewidth = 0.2) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  labs(title = "Retornos logarítmicos diarios",
+       subtitle = "La volatilidad cambia con el tiempo (heteroscedasticidad)",
+       x = NULL, y = "log-retorno")
+
+p1 / p2
+```
+
+```{r price_stats}
+ret_clean <- log_ret[!is.na(log_ret)]
+tibble(
+  metrica = c("Retorno medio anualizado",
+              "Volatilidad anualizada",
+              "Sesgo (skewness)",
+              "Curtosis en exceso"),
+  valor = c(
+    sprintf("%.4f (%.2f%%)", mean(ret_clean) * 252, mean(ret_clean) * 252 * 100),
+    sprintf("%.4f (%.2f%%)", sd(ret_clean) * sqrt(252), sd(ret_clean) * sqrt(252) * 100),
+    sprintf("%+.3f", mean((ret_clean - mean(ret_clean))^3) / sd(ret_clean)^3),
+    sprintf("%+.3f", mean((ret_clean - mean(ret_clean))^4) / sd(ret_clean)^4 - 3)
+  )
+) %>%
+  kable(caption = "Estadísticas descriptivas de los retornos diarios") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## Esquema visual del walk-forward
+
+El siguiente esquema muestra la idea del walk-forward anclado: la ventana
+de entrenamiento (azul) crece con cada paso y siempre predecimos el bloque
+inmediato siguiente (naranja).
+
+```{r wf_schema, fig.height=3.5}
+n_pasos <- 8
+tw_anual <- 4
+step_anual <- 2
+filas <- list()
+for (i in 1:n_pasos) {
+  fin_train <- tw_anual + (i - 1) * step_anual
+  filas[[i]] <- tibble(
+    paso = paste0("Paso ", i),
+    bloque = c("Entrenamiento", "OOS"),
+    inicio = c(0, fin_train),
+    fin    = c(fin_train, fin_train + step_anual)
+  )
+}
+sch <- bind_rows(filas) %>%
+  mutate(paso = factor(paso, levels = paste0("Paso ", 1:n_pasos)))
+
+ggplot(sch, aes(y = fct_rev(paso))) +
+  geom_segment(aes(x = inicio, xend = fin, yend = fct_rev(paso),
+                   color = bloque),
+               linewidth = 6, lineend = "butt") +
+  scale_color_manual(values = c("Entrenamiento" = "steelblue",
+                                "OOS" = "#FF6347")) +
+  labs(title = "Walk-forward anclado",
+       subtitle = "Cada unidad ≈ 1 año; los datos reales usan pasos de 21 días",
+       x = "Tiempo (años)", y = NULL, color = NULL) +
+  theme(legend.position = "top")
+```
+
+## Construcción de features y línea base
+
+Construimos los features sobre los datos reales. La salida es la matriz
+`X_real` (con 9 columnas), el objetivo binario `y_real` y los retornos
+`r_real` que usaremos para calcular el P&L.
+
+```{r build_real_features}
+real <- build_features(df)
+cat("Filas de features:    ", nrow(real$X), "\n")
+cat("Número de features:   ", ncol(real$X), "\n")
+cat("Features:             ", paste(colnames(real$X), collapse = ", "), "\n")
+cat("Primera barra OOS:    ", as.character(real$dates[TRAIN_WINDOW + 1]), "\n")
+cat("Pasos de re-entreno:  ", floor((nrow(real$X) - TRAIN_WINDOW) / STEP), "\n")
+cat("Sube/baja (% sube):   ", round(mean(real$y == 1) * 100, 1), "%\n")
+```
+
+## Walk-forward sobre los datos reales
+
+Corremos el walk-forward anclado una sola vez sobre los datos reales para
+obtener nuestra línea base $T_{\text{real}}$.
+
+```{r run_real, cache=TRUE}
+set.seed(RNG_SEED)
+t0 <- Sys.time()
+oos_real <- walkforward_oos(real$X, real$y, real$r,
+                            train_window = TRAIN_WINDOW, step = STEP)
+elapsed_real <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+real_sharpe <- sharpe_anualizado(oos_real$returns)
+real_pf     <- profit_factor(oos_real$returns)
+real_cagr   <- cagr(oos_real$returns)
+
+cat(sprintf("Walk-forward real listo en %.1f s\n", elapsed_real))
+cat(sprintf("Barras OOS:        %d\n", length(oos_real$returns)))
+cat(sprintf("Sharpe anualizado: %+0.3f\n", real_sharpe))
+cat(sprintf("Profit Factor:     %.3f\n", real_pf))
+cat(sprintf("CAGR:              %+.2f%%\n", real_cagr * 100))
+```
+
+## Test de permutación Monte Carlo
+
+Cada iteración del Monte Carlo es independiente: depende del DataFrame
+original y de su semilla. 
+
+```{r permutation_function}
+# Una sola permutación: permuta, recalcula features, corre WF, devuelve Sharpe.
+una_permutacion <- function(df_in, start_idx, train_window, step, seed) {
+  df_perm <- permute_bars(df_in, start_idx = start_idx, seed = seed)
+  feats   <- build_features(df_perm)
+  if (nrow(feats$X) <= train_window) return(list(sharpe = NA, returns = numeric(0), idx = integer(0)))
+  oos     <- walkforward_oos(feats$X, feats$y, feats$r,
+                             train_window = train_window, step = step)
+  list(
+    sharpe  = sharpe_anualizado(oos$returns),
+    returns = oos$returns,
+    idx     = oos$idx
+  )
+}
+```
+
+```{r run_mcpt, cache=TRUE}
+# El periodo OOS arranca en la fecha que corresponde al feature row TRAIN_WINDOW+1.
+# Buscamos esa fecha en df_ohlc para obtener start_idx en espacio de barras OHLC.
+first_oos_date <- real$dates[TRAIN_WINDOW + 1]
+start_idx_ohlc <- which(df$date == first_oos_date)
+cat("Primera fecha OOS:   ", as.character(first_oos_date), "\n")
+cat("start_idx (OHLC):    ", start_idx_ohlc, "\n\n")
+
+# Semillas hijas deterministas
+set.seed(RNG_SEED)
+seeds_hijas <- sample.int(.Machine$integer.max, N_PERMUTATIONS)
+
+# Setup paralelo
+plan(multisession, workers = N_WORKERS)
+cat(sprintf("Corriendo %d permutaciones en %d workers...\n",
+            N_PERMUTATIONS, N_WORKERS))
+
+t0 <- Sys.time()
+res_perm <- future_map(
+  seeds_hijas,
+  ~una_permutacion(df, start_idx_ohlc, TRAIN_WINDOW, STEP, .x),
+  .options = furrr_options(
+    seed = TRUE,
+    globals = c("una_permutacion", "permute_bars", "build_features",
+                "walkforward_oos", "sharpe_anualizado",
+                "xgb_params", "N_ROUNDS",
+                "df", "start_idx_ohlc", "TRAIN_WINDOW", "STEP"),
+    packages = c("xgboost", "TTR", "dplyr")
+  )
+)
+elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+plan(sequential)
+
+perm_sharpes <- map_dbl(res_perm, "sharpe")
+perm_returns <- map(res_perm, "returns")
+perm_idx     <- map(res_perm, "idx")
+
+cat(sprintf("\nTiempo total: %.1f s (%.0f ms / permutación)\n",
+            elapsed, elapsed / N_PERMUTATIONS * 1000))
+```
+
+```{r p_value_calc}
+n_extremos <- sum(perm_sharpes >= real_sharpe, na.rm = TRUE)
+p_valor    <- (1 + n_extremos) / (1 + N_PERMUTATIONS)
+
+cat(sprintf("Sharpe real:                       %+0.3f\n", real_sharpe))
+cat(sprintf("Permutaciones con Sharpe >= real:  %d / %d\n",
+            n_extremos, N_PERMUTATIONS))
+cat(sprintf("p-valor (con corrección +1):       %.4f\n", p_valor))
+```
+
+# Resultados e interpretación
+
+## Tabla resumen
+
+```{r summary_table}
+tabla <- tibble(
+  Métrica = c("Sharpe real (T_real)",
+              "Media de Sharpes permutados",
+              "Desv. estándar de la nula",
+              "Percentil 5% de la nula",
+              "Percentil 95% de la nula",
+              "# permutaciones con Sharpe ≥ real",
+              "p-valor (corrección +1)",
+              "Permutaciones totales"),
+  Valor = c(
+    sprintf("%+.4f", real_sharpe),
+    sprintf("%+.4f", mean(perm_sharpes, na.rm = TRUE)),
+    sprintf("%.4f", sd(perm_sharpes, na.rm = TRUE)),
+    sprintf("%+.4f", quantile(perm_sharpes, 0.05, na.rm = TRUE)),
+    sprintf("%+.4f", quantile(perm_sharpes, 0.95, na.rm = TRUE)),
+    as.character(n_extremos),
+    sprintf("%.4f", p_valor),
+    as.character(N_PERMUTATIONS)
+  )
+)
+
+kable(tabla, caption = "Resumen del test de permutación walk-forward",
+      align = c("l", "r")) %>%
+  kable_styling(full_width = FALSE, position = "center",
+                bootstrap_options = c("striped", "hover"))
+```
+
+## Distribución nula del Sharpe
+
+El gráfico central del test: el histograma azul es la distribución de los
+Sharpes OOS bajo la hipótesis nula (mercado sin estructura temporal); la
+línea roja es el Sharpe real obtenido con los datos verdaderos.
+
+- Si la línea roja queda **muy a la derecha** del histograma, el Sharpe
+  real sería raro bajo $H_0$ → evidencia de señal real.
+- Si queda **dentro o a la izquierda** del histograma, el Sharpe real
+  podría haberse obtenido por puro azar → no hay evidencia de señal.
+
+```{r null_distribution, fig.height=4.5}
+df_perm_sharpes <- tibble(sharpe = perm_sharpes)
+
+ggplot(df_perm_sharpes, aes(sharpe)) +
+  geom_histogram(bins = 30, fill = "steelblue",
+                 color = "white", alpha = 0.85) +
+  geom_vline(xintercept = real_sharpe, color = "#DC143C",
+             linewidth = 1.1) +
+  annotate("text",
+           x = real_sharpe, y = Inf,
+           label = sprintf("  Sharpe real = %+.3f  ", real_sharpe),
+           hjust = ifelse(real_sharpe > median(perm_sharpes, na.rm = TRUE),
+                          1.0, 0.0),
+           vjust = 1.5, color = "#DC143C", fontface = "bold") +
+  labs(title = sprintf("Distribución nula del Sharpe — %d permutaciones tipo Aronson",
+                       N_PERMUTATIONS),
+       subtitle = sprintf("p-valor = %.4f", p_valor),
+       x = "Sharpe Ratio (anualizado)",
+       y = "Frecuencia")
+```
+
+## Curva de equity OOS real
+
+La curva de equity acumula los retornos OOS día a día. Una curva ascendente
+estable es señal de una estrategia que gana consistentemente; una curva
+plana o errática es lo opuesto.
+
+```{r equity_real, fig.height=4}
+eq_real <- tibble(
+  date   = real$dates[oos_real$idx],
+  equity = cumsum(oos_real$returns)
+)
+
+ggplot(eq_real, aes(date, equity)) +
+  geom_ribbon(aes(ymin = pmin(equity, 0), ymax = pmax(equity, 0)),
+              fill = "steelblue", alpha = 0.18) +
+  geom_line(color = "steelblue", linewidth = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
+  labs(title = "Curva de equity OOS — estrategia real",
+       subtitle = sprintf("Sharpe %+.3f | CAGR %+.1f%% | PF %.2f",
+                          real_sharpe, real_cagr * 100, real_pf),
+       x = NULL, y = "Retorno acumulado OOS (log)")
+```
+
+## Curva real vs. envolvente de permutaciones
+
+La banda gris muestra el rango entre los percentiles 5% y 95% de las curvas
+de equity permutadas; la línea negra punteada es la mediana. La estrategia
+real, en rojo, debería vivir consistentemente arriba de la banda si su
+desempeño es "real".
+
+```{r equity_bands, fig.height=4.5}
+# Reconstruimos cada curva permutada alineada al índice OOS real
+n_oos <- length(oos_real$returns)
+
+# Cada permutación usa los mismos índices OOS (mismas fechas).
+perm_eq_mat <- matrix(NA_real_, nrow = N_PERMUTATIONS, ncol = n_oos)
+for (i in seq_len(N_PERMUTATIONS)) {
+  if (length(perm_returns[[i]]) == n_oos) {
+    perm_eq_mat[i, ] <- cumsum(perm_returns[[i]])
+  }
+}
+band <- tibble(
+  date = real$dates[oos_real$idx],
+  q05  = apply(perm_eq_mat, 2, quantile, 0.05, na.rm = TRUE),
+  q50  = apply(perm_eq_mat, 2, quantile, 0.50, na.rm = TRUE),
+  q95  = apply(perm_eq_mat, 2, quantile, 0.95, na.rm = TRUE),
+  real = cumsum(oos_real$returns)
+)
+
+ggplot(band, aes(date)) +
+  geom_ribbon(aes(ymin = q05, ymax = q95),
+              fill = "grey70", alpha = 0.5) +
+  geom_line(aes(y = q50), color = "grey30",
+            linewidth = 0.4, linetype = "dashed") +
+  geom_line(aes(y = real), color = "#DC143C", linewidth = 0.9) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  labs(title = "Curva de equity real vs. envolvente de permutaciones",
+       subtitle = sprintf(
+         "Banda gris: percentiles 5%%–95%% de %d curvas permutadas | mediana en línea punteada",
+         N_PERMUTATIONS),
+       x = NULL, y = "Retorno acumulado OOS (log)")
+```
+
+## Todas las curvas permutadas superpuestas
+
+Para tener una vista completa de la "nube" de mundos sin señal,
+graficamos todas las curvas permutadas en gris muy translúcido junto con
+la curva real en rojo.
+
+```{r equity_all, fig.height=5}
+perm_long <- as_tibble(t(perm_eq_mat)) %>%
+  mutate(date = real$dates[oos_real$idx]) %>%
+  pivot_longer(-date, names_to = "perm", values_to = "equity")
+
+ggplot() +
+  geom_line(data = perm_long, aes(date, equity, group = perm),
+            color = "grey60", alpha = 0.08, linewidth = 0.25) +
+  geom_line(data = band, aes(date, real),
+            color = "#DC143C", linewidth = 1.0) +
+  geom_hline(yintercept = 0, linewidth = 0.3, linetype = "dashed") +
+  labs(title = sprintf("Estrategia real vs. %d curvas de equity permutadas",
+                       N_PERMUTATIONS),
+       subtitle = "Las curvas grises son el mundo sin señal (hipótesis nula)",
+       x = NULL, y = "Retorno acumulado OOS (log)")
+```
+
+## Interpretación de los resultados
+
+```{r interpretation, results='asis'}
+nivel <- if (p_valor < 0.01) {
+  "**muy fuerte** (p < 0.01)"
+} else if (p_valor < 0.05) {
+  "**significativa** (p < 0.05)"
+} else if (p_valor < 0.10) {
+  "**marginal** (0.05 ≤ p < 0.10)"
+} else {
+  "**no significativa** (p ≥ 0.10)"
+}
+
+cat(sprintf(
+  "Con un Sharpe real de **%+.3f** y un p-valor de **%.4f**, la evidencia es %s.\n\n",
+  real_sharpe, p_valor, nivel
+))
+
+if (p_valor < 0.05) {
+  cat("Esto sugiere que el desempeño OOS del modelo XGBoost **es difícil de ",
+      "explicar por puro azar**: incluso bajo la hipótesis nula de un mercado ",
+      "sin estructura temporal explotable, sería raro observar un Sharpe tan alto. ",
+      "Hay evidencia estadística de que el modelo captura algo de señal real.\n\n",
+      sep = "")
+} else {
+  cat("Esto sugiere que el desempeño OOS del modelo **es indistinguible del azar**: ",
+      "una fracción no despreciable de los mercados sintéticos sin estructura ",
+      "obtuvo Sharpes iguales o mayores que el real. No tenemos evidencia ",
+      "estadística suficiente para concluir que el modelo capture señal real.\n\n",
+      sep = "")
+}
+
+cat("**Significancia estadística vs.\\ significancia práctica.** ",
+    "Aun si el p-valor fuera muy bajo, eso no implicaría que la estrategia sea ",
+    "rentable en la práctica. Falta incorporar:\n\n",
+    "- comisiones por operación,\n",
+    "- *slippage* (deslizamiento entre el precio de la señal y el de ejecución),\n",
+    "- costo de mantener posiciones cortas,\n",
+    "- impuestos,\n",
+    "- restricciones de liquidez.\n\n",
+    "Una estrategia con Sharpe OOS de ~0.5 antes de costos puede convertirse en ",
+    "una estrategia con Sharpe negativo después de fricciones reales.\n\n",
+    sep = "")
+```
+
+# Conclusiones
+
+En este reporte aplicamos un **test de permutación walk-forward** para
+evaluar si una estrategia de trading basada en XGBoost sobre el S&P 500
+captura alguna señal predictiva real, o si su desempeño OOS podría
+explicarse por azar. La metodología tiene tres ingredientes principales:
+
+1. **Walk-forward anclado**: el modelo se reentrena cada 21 días con toda
+   la historia disponible y predice el bloque inmediato siguiente. Esto
+   imita cómo se usaría en producción.
+2. **Permutación tipo Aronson** de las barras OHLC en log-espacio: cada
+   componente (gap, body, sombra superior, sombra inferior) se permuta de
+   manera independiente, conservando la distribución marginal de cada uno
+   pero destruyendo el orden temporal.
+3. **Distribución nula empírica del Sharpe** construida sobre `r N_PERMUTATIONS`
+   permutaciones, contra la cual se compara el Sharpe real.
+
+```{r final_summary, results='asis'}
+cat(sprintf(
+  "El resultado obtenido fue un Sharpe real de **%+.3f** y un p-valor de **%.4f**. ",
+  real_sharpe, p_valor
+))
+if (p_valor < 0.05) {
+  cat("Bajo el umbral convencional de 0.05, **rechazamos** la hipótesis ",
+      "nula de ausencia de señal. El modelo parece capturar algo más que ruido.\n\n",
+      sep = "")
+} else {
+  cat("Bajo el umbral convencional de 0.05, **no rechazamos** la hipótesis ",
+      "nula. El desempeño del modelo es estadísticamente compatible con el azar.\n\n",
+      sep = "")
+}
+
+cat("Este resultado debe tomarse con cautela: depende del periodo histórico, ",
+    "del número de permutaciones (que en este reporte es relativamente bajo, 100), ",
+    "y del modelo y features específicos elegidos.\n\n", sep = "")
+```
+
+## Trabajo futuro
+
+Como extensiones naturales del análisis se pueden considerar:
+
+- **Aumentar el número de permutaciones** a 500 o 1,000 para precisión del
+  p-valor (en el reporte original se usaron 1,000).
+- Probar **otros estadísticos de prueba** además del Sharpe: Profit Factor,
+  Calmar Ratio, máxima caída *(max drawdown)*.
+- Incluir **costos de transacción y slippage** realistas en el cálculo del
+  PnL.
+- Comparar el modelo contra una **estrategia benchmark** simple (compra y
+  retén, momentum sencillo).
+- Probar **bootstrap por bloques** para conservar parcialmente la
+  agrupación de volatilidad (clustering de volatilidad), que la permutación
+  Aronson destruye.
+- Probar **otros modelos** (Random Forest, redes neuronales, modelos
+  lineales regularizados) y **otros conjuntos de features** (microestructura,
+  flujos de órdenes, sentimiento).
+
+## Limitaciones
+
+- **Periodo histórico único.** El análisis cubre 2005-2024. Otra ventana
+  histórica podría dar otra conclusión.
+- **Sin costos de transacción ni slippage.** Los retornos brutos sobreestiman
+  el desempeño real.
+- **Decisiones del analista.** Los features y los hiperparámetros fueron
+  fijados antes del experimento, pero no se controlan los grados de libertad
+  empleados al elegirlos en su momento.
+- **Pocas permutaciones.** Con `r N_PERMUTATIONS` permutaciones, el p-valor
+  tiene incertidumbre Monte Carlo no despreciable.
+- **La permutación destruye clustering de volatilidad.** Estrategias que
+  dependen de regímenes de volatilidad podrían quedar penalizadas.
+- **No es recomendación financiera.** Este es un ejercicio académico; no
+  implica que se deba operar la estrategia.
+
+# Anexo de código
+
+Todo el código necesario para reproducir el reporte está embebido en este
+mismo archivo Quarto. Para ejecutarlo desde la terminal:
+
+```bash
+quarto render reporte_wfpt_sp500.qmd
+```
+
+Esto produce un archivo HTML autocontenido `reporte_wfpt_sp500.html`. Si se
+quiere un PDF, se puede cambiar el `format` del YAML a `pdf` (requiere
+LaTeX instalado) o se puede usar `format: docx` para Word.
+
+## Notas de reproducibilidad
+
+- La semilla maestra `RNG_SEED <- 42` controla todo el aleatorismo.
+- Las semillas hijas para cada permutación se generan deterministamente
+  mediante `sample.int(...)` después de fijar la semilla maestra.
+- Los hiperparámetros de XGBoost están fijos (`xgb_params`) para evitar
+  inflar la tasa de error tipo I por *snooping* sobre los folds.
+- La paralelización se maneja con `furrr::future_map` sobre un *plan*
+  `multisession`. Con la opción `furrr_options(seed = TRUE)`, los resultados
+  son reproducibles incluso al cambiar el número de workers.
+
+## Bibliografía
+
+- Aronson, D. (2007). *Evidence-Based Technical Analysis*. Wiley.
+- White, H. (2000). "A Reality Check for Data Snooping." *Econometrica*, 68(5).
+- Hansen, P. (2005). "A Test for Superior Predictive Ability." *Journal of
+  Business & Economic Statistics*, 23(4).
+- Bailey, D., Borwein, J., López de Prado, M. y Zhu, Q. (2014). "The Deflated
+  Sharpe Ratio." *Journal of Portfolio Management*.
+- Chen, T. y Guestrin, C. (2016). "XGBoost: A Scalable Tree Boosting
+  System." *Proceedings of the 22nd ACM SIGKDD*.
