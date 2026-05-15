@@ -27,9 +27,9 @@ execute:
 
 # Introducción al problema
 
-Cuando un modelo de *machine learning* muestra una curva de equity bonita en un backtest, casi siempre toca hacerse la pregunta incómoda: ¿de verdad encontró señal predictiva, o nomás memorizó ruido? El sobreajuste explica por qué tantos sistemas que parecen rentables en papel acaban quemando capital apenas se les pone dinero real.
+Cuando un modelo de *machine learning* muestra una curva de equity bonita en un backtest, casi siempre toca hacerse la pregunta incómoda: ¿De verdad encontró señal predictiva, o nomás memorizó ruido? El sobreajuste explica por qué tantos sistemas que parecen rentables en papel acaban quemando capital apenas se les pone dinero real.
 
-El problema de fondo es viejo. Con suficientes parámetros y suficientes intentos, cualquier modelo aprende los accidentes históricos del precio y produce métricas espectaculares dentro de muestra. La pregunta útil no es "¿gana dinero en backtest?", sino "¿gana significativamente más de lo que ganaría un sistema sin señal sobre datos sin información predictiva?". Esa segunda pregunta es la que ataca el Monte Carlo Permutation Test (MCPT) que describe Timothy Masters en *Testing and Tuning Market Trading Systems*.
+El problema de fondo es viejo. Con suficientes parámetros y suficientes intentos, cualquier modelo aprende los accidentes históricos del precio y produce métricas espectaculares dentro de muestra. La pregunta útil no es "¿Gana dinero en backtest?", sino "¿Gana significativamente más de lo que ganaría un sistema sin señal sobre datos sin información predictiva?". Esa segunda pregunta es la que ataca el Monte Carlo Permutation Test (MCPT) que describe Timothy Masters en *Testing and Tuning Market Trading Systems*.
 
 ## Objetivo y pregunta de investigación
 
@@ -49,7 +49,7 @@ Si el MCPT está bien calibrado, vamos a ver p-values bajos para el oráculo (se
 
 1. ¿El MCPT in-sample detecta sobreajuste? (LGBM: p-IS bajo, p-WF alto.)
 2. ¿El MCPT walk-forward detecta sistemas genuinos? (Oráculo: p-WF bajo.)
-3. Bajo la hipótesis nula, ¿el p-value es uniforme? (Random: p ≈ U[0,1].)
+3. Bajo la hipótesis nula, ¿El p-value es uniforme? (Random: p ≈ U[0,1].)
 4. ¿Cómo se contamina el test cuando las features están correlacionadas con la magnitud del retorno? (LGBM vs LGBM clean.)
 
 # Marco teórico
