@@ -27,23 +27,23 @@ execute:
 
 # Introducción al problema
 
-En finanzas cuantitativas hay una pregunta que aparece una y otra vez: cuando un modelo de *machine learning* muestra una curva de equity hermosa en un backtest, **¿realmente encontró una señal predictiva en el mercado, o simplemente memorizó ruido?** Esta pregunta no es retórica: el sobreajuste (*overfitting*) es la causa principal por la que sistemas de trading que parecen rentables en papel pierden dinero cuando se les pone capital real.
+Cuando un modelo de *machine learning* enseña una curva de equity bonita en un backtest, casi siempre hay que preguntarse algo incómodo: ¿encontró una señal predictiva, o nada más memorizó ruido? El sobreajuste es la razón por la que tantos sistemas que se ven rentables en papel queman capital en cuanto se prenden en producción.
 
-El problema fundamental es que con suficientes parámetros y suficientes pruebas, **cualquier modelo puede aprender los accidentes históricos del precio** y exhibir métricas espectaculares en la muestra de entrenamiento. La pregunta correcta no es "¿mi sistema gana dinero en backtest?" sino "**¿mi sistema gana significativamente más de lo que ganaría un sistema sin señal sobre datos sin información predictiva?**" Esa es exactamente la pregunta que responde el **Monte Carlo Permutation Test (MCPT)** descrito por Timothy Masters en *Testing and Tuning Market Trading Systems*.
+El fondo del asunto es viejo y conocido: con suficientes parámetros y suficientes intentos, cualquier modelo aprende los accidentes históricos del precio y produce métricas espectaculares dentro de la muestra. La pregunta útil no es "¿mi sistema gana dinero en backtest?", sino "¿gana significativamente más de lo que ganaría un sistema sin señal sobre datos sin información predictiva?". Esa es la pregunta que ataca el Monte Carlo Permutation Test (MCPT) que Timothy Masters describe en *Testing and Tuning Market Trading Systems*.
 
 ## Objetivo y pregunta de investigación
 
-Este reporte **no** intenta construir el mejor sistema de trading sobre S&P 500. Es un trabajo de **calibración metodológica**. Queremos responder, empíricamente, una sola pregunta:
+Este reporte no intenta construir el mejor sistema de trading sobre el S&P 500. Es un trabajo de calibración metodológica. La pregunta es una sola:
 
-> **¿El MCPT realmente discrimina entre modelos con señal genuina y modelos que sólo memorizan ruido, cuando los aplicamos a un activo real (SPY)?**
+> ¿El MCPT realmente discrimina entre modelos con señal genuina y modelos que sólo memorizan ruido, cuando los aplicamos a un activo real (SPY)?
 
-Para responderla, diseñamos un experimento con tres modelos **donde nosotros conocemos la verdad**:
+Para responderla armamos un experimento con tres modelos donde sabemos *a priori* qué debería pasar:
 
 1. **Oráculo con ruido**: ve el target real y le suma ruido gaussiano. Por construcción tiene señal.
-2. **LightGBM overfit**: gradient boosting con muchas features técnicas. Por construcción **debe** overfittear in-sample y fallar walk-forward.
-3. **Random puro**: tira una moneda. Por construcción **no** tiene señal.
+2. **LightGBM overfit**: gradient boosting con muchas features técnicas. Por construcción debe overfittear in-sample y fallar walk-forward.
+3. **Random puro**: tira una moneda. Por construcción no tiene señal.
 
-Si el MCPT funciona, debería darnos p-values bajos para el oráculo (señal real), p-values muy bajos in-sample pero altos walk-forward para el LGBM (overfitting clásico), y p-values aproximadamente uniformes para el random (control negativo).
+Si el MCPT está bien calibrado, esperamos p-values bajos para el oráculo (señal real), p-values bajos in-sample pero altos walk-forward para el LGBM (overfitting clásico), y p-values más o menos uniformes para el random.
 
 ## Preguntas específicas
 
@@ -56,121 +56,121 @@ Si el MCPT funciona, debería darnos p-values bajos para el oráculo (señal rea
 
 ## El test de permutación de Monte Carlo (MCPT)
 
-El MCPT (Masters, capítulo 7) es un test no paramétrico de hipótesis. Su lógica es la siguiente:
+El MCPT (Masters, capítulo 7) es un test de hipótesis no paramétrico. La lógica es directa:
 
 ::: {.callout-note title="Hipótesis nula del MCPT"}
-$H_0$: el modelo es **inútil**, es decir, no hay relación entre las features $X$ y el target $y$. Bajo esta hipótesis, cualquier desempeño positivo observado se debe al azar.
+$H_0$: el modelo es inútil. No hay relación entre las features $X$ y el target $y$, y cualquier desempeño positivo se debe al azar.
 :::
 
-La idea operativa es:
+La receta operativa:
 
-1. **Computar el desempeño real** del sistema con los datos en su orden original. Llamemos a este valor $\theta_{\text{real}}$.
-2. **Permutar aleatoriamente** los datos de manera que **destruyamos cualquier relación predictiva** entre $X$ y $y$, pero **preservemos** las distribuciones marginales y las dependencias intra-$X$.
-3. **Volver a correr** el sistema sobre los datos permutados y medir $\theta^{(j)}$.
-4. **Repetir** $m$ veces ($m$ del orden de cientos o miles).
-5. **Comparar** $\theta_{\text{real}}$ contra la distribución $\{\theta^{(1)}, \dots, \theta^{(m)}\}$.
+1. Calcular el desempeño real del sistema con los datos en su orden original. Llamamos a ese valor $\theta_{\text{real}}$.
+2. Permutar los datos de modo que se destruya la relación predictiva entre $X$ y $y$, sin tocar las distribuciones marginales ni las dependencias internas de $X$.
+3. Volver a correr el sistema sobre los datos permutados y medir $\theta^{(j)}$.
+4. Repetir $m$ veces (centenas o miles).
+5. Comparar $\theta_{\text{real}}$ contra la distribución $\{\theta^{(1)}, \dots, \theta^{(m)}\}$.
 
-El p-value se calcula como:
+El p-value queda:
 
 $$
 p\text{-value} = \frac{k+1}{m+1}, \quad k = \#\{j : \theta^{(j)} \geq \theta_{\text{real}}\}
 $$
 
-El "+1" en numerador y denominador es la corrección de Masters (la corrida original cuenta como una observación válida bajo $H_0$). Si $\theta_{\text{real}}$ cae a la derecha de casi todas las permutaciones, $k$ es chico y el p-value es chico: hay evidencia contra $H_0$, es decir, evidencia de señal genuina.
+El "+1" en numerador y denominador es la corrección de Masters: la corrida original cuenta como una observación válida bajo $H_0$. Si $\theta_{\text{real}}$ cae a la derecha de casi todas las permutaciones, $k$ es chico y el p-value también: hay evidencia de señal genuina.
 
-## ¿Qué permutar y por qué? (lo más importante)
+## ¿Qué permutar y por qué? (la decisión más importante)
 
-Esta es la decisión crítica de todo el experimento, y donde Masters dedica buena parte del capítulo. Existen dos grandes estrategias:
+Aquí se gana o se pierde el experimento, y por algo Masters le dedica buena parte del capítulo. Hay dos estrategias grandes.
 
 ### Permutación de precios (Masters)
 
-Apropiada para **sistemas de trading puros** donde el sistema mira la historia de precios y toma decisiones de long/short. Se deconstruye el precio en cambios (log-returns), se barajan los cambios, y se reconstruye una historia sintética manteniendo el precio inicial y final (preservando el trend). El sistema se re-entrena sobre el "mercado sintético".
+Sirve para sistemas de trading que miran la historia de precios y toman decisiones de long/short. Se deconstruye el precio en cambios (log-returns), se barajan los cambios y se reconstruye una historia sintética manteniendo el precio inicial y final (así se conserva la tendencia). El sistema se re-entrena sobre ese "mercado sintético".
 
 ### Permutación del target — *Y-permutation* (Masters)
 
-Apropiada para **modelos predictivos** donde tenemos pares $(X_t, y_t)$ y queremos romper el link entre features y target sin tocar la estructura interna de $X$. Es exactamente nuestro caso: tenemos features técnicas sobre SPY y queremos predecir el signo del retorno del día siguiente.
+Sirve para modelos predictivos donde uno tiene pares $(X_t, y_t)$ y quiere romper el link entre features y target sin tocar la estructura interna de $X$. Es nuestro caso: features técnicas sobre SPY para predecir el signo del retorno del día siguiente.
 
-**Nosotros usamos Y-permutation.** La justificación de Masters es:
+Nosotros usamos Y-permutation. La justificación que da Masters es:
 
 > "Indicator sets must not permute with respect to one another, only with respect to the target. This preserves intraset correlation, which is critical to correct testing." (Masters)
 
-Es decir: si tenemos como features la media móvil de 10 días, la de 20, la de 50 y la volatilidad realizada, esas features están **correlacionadas entre sí en el tiempo real**. Si las permutamos de manera independiente generaríamos combinaciones imposibles en el mercado real (volatilidad alta con todas las medias móviles planas, por ejemplo). El MCPT exige que las permutaciones tengan **la misma probabilidad de ocurrir bajo $H_0$** que en la realidad. Permutar features independientemente viola esto.
+En otras palabras: si tenemos como features las medias móviles de 10, 20 y 50 días, más la volatilidad realizada, todas esas series están correlacionadas entre sí en el tiempo real. Permutarlas por separado generaría combinaciones que en el mercado real no ocurren (volatilidad alta con todas las medias móviles planas, por ejemplo). El MCPT pide que las permutaciones tengan la misma probabilidad de ocurrir bajo $H_0$ que en la realidad, y permutar features de forma independiente rompe eso.
 
-La solución limpia: dejamos $X$ intacto y barajamos sólo $y$ (junto con los retornos $r$ que se usan para evaluar PnL). Así rompemos el emparejamiento $X_t \to y_t$ sin tocar la estructura interna de $X$.
+La opción limpia es dejar $X$ intacto y barajar sólo $y$ (junto con los retornos $r$ que se usan para evaluar PnL). Así rompemos el emparejamiento $X_t \to y_t$ sin contaminar la estructura interna de $X$.
 
-### El problema oculto: la correlación serial en target y features
+### El problema oculto: correlación serial en target y features
 
-Masters advierte de un segundo problema:
+Masters avisa de un segundo problema:
 
 > "Serial correlation in just one or more predictor variables, or in just the target, is harmless. […] But if both are serially correlated, permutation will destroy this property, and we will be in the situation of processing pairings that could not occur in real life."
 
-Las features técnicas (medias móviles, volatilidades realizadas) tienen **enorme autocorrelación serial**: el valor en $t$ y en $t-1$ son casi iguales. Si el target o el retorno también tienen autocorrelación, el MCPT se rompe.
+Las features técnicas (medias móviles, volatilidades realizadas) son extremadamente autocorrelacionadas: el valor en $t$ y en $t-1$ son casi idénticos. Si el target o el retorno también lo son, el MCPT se rompe.
 
-**Nuestro target es el signo del log-return**, que tiene autocorrelación cercana a cero en daily data (consistente con la hipótesis de eficiencia débil). Pero hay un problema más sutil: algunas de nuestras features están correlacionadas con la **magnitud** del retorno futuro (por ejemplo, la volatilidad realizada predice la magnitud del próximo movimiento, aunque no su signo). Esto puede inducir un sesgo en favor de la corrida real, porque el modelo no permutado se beneficia de saber **cuándo** los retornos son grandes.
+En nuestro caso el target es el signo del log-return diario, que tiene autocorrelación prácticamente nula (lo cual es consistente con la hipótesis de eficiencia débil). El problema más fino es otro: algunas features están correlacionadas con la magnitud del retorno futuro. Por ejemplo, la volatilidad realizada predice cuán grande será el próximo movimiento, aunque no en qué dirección va. Eso le da una ventaja sutil a la corrida real, porque el modelo "sabe cuándo" los retornos son grandes incluso si no sabe el signo.
 
-Para cuantificar este sesgo entrenamos LightGBM en dos configuraciones:
+Para medir el tamaño de ese sesgo entrenamos LightGBM en dos configuraciones:
 
-- **LGBM (full)**: con todas las features técnicas (27 columnas).
-- **LGBM clean**: sólo con `open, high, low, close` crudos (4 columnas), que tienen correlación mínima con $|r_{t+1}|$.
+- **LGBM (full)**: con las 27 features técnicas.
+- **LGBM clean**: sólo con `open, high, low, close` crudos (4 columnas), donde la correlación con $|r_{t+1}|$ es mínima.
 
-La diferencia entre los dos p-values aísla el sesgo inducido por features correlacionadas con la magnitud.
+La diferencia entre los dos p-values aísla el sesgo que inducen las features correlacionadas con la magnitud.
 
 ## Walk-forward vs in-sample
 
 Masters distingue tres usos del MCPT:
 
-1. **Testing a fully specified system** sobre datos OOS.
-2. **Testing the training process**, con énfasis en detectar overfitting (in-sample).
-3. **Testing a model factory** (walk-forward).
+1. *Testing a fully specified system* sobre datos OOS.
+2. *Testing the training process*, con foco en detectar overfitting (in-sample).
+3. *Testing a model factory* (walk-forward).
 
-Nosotros corremos los dos extremos:
+Corremos los dos extremos:
 
-- **MCPT in-sample**: entrenamos el modelo sobre todos los datos y medimos el Profit Factor (PF) in-sample. Bajo $H_0$, permutamos $y$ y re-entrenamos. Este test detecta overfitting: un modelo overfit tendrá PF altísimo en la corrida real, pero también en las permutaciones (porque vuelve a memorizar ruido), así que el p-value será alto.
+- **MCPT in-sample**: entrenamos el modelo sobre todos los datos y medimos el Profit Factor (PF) in-sample. Bajo $H_0$ permutamos $y$ y volvemos a entrenar. El test sirve para detectar overfitting: si el modelo está sobreajustado, su PF en la corrida real va a ser altísimo, pero también lo será en las permutaciones (porque vuelve a memorizar ruido), y por eso el p-value sale alto.
 
   > "An overfitted trading system will perform well not only on the original data but on permuted data as well. […] All in-sample performances, permuted and unpermuted, will be excellent, and the original performance will not stand out from its permuted competitors." (Masters)
 
-- **MCPT walk-forward (WF)**: en cada fold, entrenamos con una ventana de los últimos 8 años y predecimos los próximos 3 años (re-entrenando cada 756 días). Concatenamos todas las predicciones OOS y medimos PF. Bajo $H_0$, permutamos $y$ y los retornos en el rango OOS conjunto **una sola vez por permutación** y corremos todo el walk-forward de nuevo.
+- **MCPT walk-forward (WF)**: en cada fold entrenamos con la ventana de los últimos 8 años y predecimos los próximos 3 (re-entrenando cada 756 días). Concatenamos todas las predicciones OOS y medimos PF. Bajo $H_0$ permutamos $y$ y los retornos en el rango OOS conjunto una sola vez por permutación, y volvemos a correr el walk-forward completo.
 
-  Aquí la regla de Masters es respetar el principio "**la primera ventana de training nunca aparece en OOS**": por lo tanto **no permutamos esa primera ventana**, sólo el rango OOS.
+  Aquí Masters insiste en una regla: la primera ventana de training nunca aparece en OOS en la corrida real, así que tampoco debe permutarse hacia adentro del OOS de las permutaciones.
 
 ## ¿Qué es exactamente un *sliding walk-forward*?
 
-El walk-forward es la forma honesta de evaluar un modelo en series de tiempo. En *machine learning* tradicional uno divide los datos aleatoriamente en train/test, pero **eso no funciona en finanzas**: si entrenamos con datos de 2020 y testeamos con datos de 2010, estaríamos usando el futuro para predecir el pasado (*look-ahead bias*). Cualquier modelo se vería artificialmente bueno.
+El walk-forward es la forma honesta de evaluar un modelo en series de tiempo. En *machine learning* tradicional uno parte los datos al azar en train/test, pero en finanzas eso no funciona: si entrenamos con 2020 y testeamos con 2010, estaríamos usando el futuro para predecir el pasado (*look-ahead bias*) y cualquier modelo se vería artificialmente bueno.
 
-El walk-forward respeta el orden temporal. Existen dos variantes:
+El walk-forward respeta el orden temporal. Hay dos variantes:
 
-- **Anclado (*anchored*)**: la ventana de training **crece** con el tiempo. Siempre empieza en el primer dato y se extiende hasta el momento actual. El modelo "recuerda" toda la historia.
-- **Deslizante (*sliding* o *rolling*)**: la ventana de training tiene **tamaño fijo** y se mueve hacia adelante. El modelo "olvida" datos viejos y siempre se entrena sobre las últimas N observaciones.
+- **Anclado (*anchored*)**: la ventana de training crece con el tiempo. Siempre arranca en el primer dato y se extiende hasta el momento actual. El modelo "recuerda" toda la historia.
+- **Deslizante (*sliding* o *rolling*)**: la ventana de training tiene tamaño fijo y se desliza hacia adelante. El modelo "olvida" datos viejos y siempre se entrena sobre las últimas N observaciones.
 
-**Nosotros usamos sliding walk-forward.** Asumimos que el mercado tiene memoria limitada: los regímenes cambian, las volatilidades cambian, las correlaciones cambian. Entrenar sobre una ventana móvil hace que el modelo se adapte a las condiciones recientes en lugar de arrastrar régimenes obsoletos.
+Usamos sliding walk-forward. El mercado tiene memoria limitada: los regímenes, las volatilidades y las correlaciones cambian con el tiempo, así que entrenar sobre una ventana móvil hace que el modelo se adapte a las condiciones recientes en lugar de arrastrar regímenes obsoletos.
 
 ### Esquema visual
 
 ![Esquema genérico del sliding walk-forward. La ventana de training (azul) tiene tamaño fijo y se desliza un paso a la vez; en cada paso, el modelo predice sobre la ventana OOS inmediatamente siguiente (rojo). La zona inicial (gris) queda anclada.](results/sliding_wf_diagram.png){#fig-sliding-wf}
 
-Cada **fold** consiste en:
+Cada fold tiene:
 
-1. Una **ventana de training** de tamaño fijo (azul) sobre las observaciones más recientes hasta ese momento.
-2. Una **ventana OOS** inmediatamente posterior (rojo), donde el modelo predice **sin haber visto esos datos**.
-3. Entre fold y fold, ambas ventanas se desplazan juntas hacia adelante.
-4. Las predicciones de todas las ventanas OOS se **concatenan** en una sola serie OOS continua. Sobre esa serie calculamos el Profit Factor final.
+1. Una ventana de training de tamaño fijo (azul) sobre las observaciones más recientes hasta ese momento.
+2. Una ventana OOS inmediatamente posterior (rojo), donde el modelo predice sin haber visto esos datos.
+3. Entre fold y fold, ambas ventanas se desplazan juntas.
+4. Las predicciones de todas las ventanas OOS se concatenan en una sola serie continua. Sobre esa serie calculamos el Profit Factor final.
 
-En nuestro experimento sobre SPY, con ventana de training de 8 años y ventana OOS de 3 años sobre ~26 años de datos, terminamos con **exactamente 6 folds OOS** (5 folds completos de 3 años + un fold final de ~2.5 años, dado que el rango OOS total es ~17.5 años). Cada fold re-entrena el modelo desde cero sobre su ventana — no hay *online learning* ni transferencia entre folds. Folds OOS largos (3 años) en lugar de cortos (3 meses) hacen el test más exigente: el modelo tiene que generalizar lejos de su training set, y refleja mejor la práctica realista de un sistema que se re-entrena cada cierto tiempo en lugar de cada trimestre.
+En nuestro experimento sobre SPY, con ventana de training de 8 años y ventana OOS de 3 años sobre ~26 años de datos, salen exactamente 6 folds OOS (5 folds completos de 3 años más uno final de ~2.5 años, dado que el rango OOS total es ~17.5 años). Cada fold re-entrena el modelo desde cero sobre su ventana; no hay *online learning* ni transferencia entre folds. Usamos folds OOS largos (3 años) en lugar de cortos (3 meses) porque el test queda más exigente: el modelo tiene que generalizar lejos de su training set, y se parece más a la práctica realista de un sistema que se re-entrena cada cierto tiempo en lugar de cada trimestre.
 
 ::: {.callout-note title="Qué se permuta en walk-forward"}
-Mirando el diagrama: **sólo se permuta la zona roja**, es decir, el rango OOS conjunto a partir del final del train inicial.
+En el diagrama, sólo se permuta la zona roja: el rango OOS conjunto a partir del final del train inicial.
 
-- **Zona gris (train inicial)**: anclada. No se toca. Es idéntica en la corrida real y en todas las permutaciones.
-- **Zona roja (todo el OOS)**: bajo $H_0$ permutamos el par $(y, r)$ con un único índice aleatorio sobre **todo** ese rango, de una vez. Después el walk-forward corre normalmente sobre el dataset resultante: las ventanas de training móviles van pasando por encima del rango permutado y re-entrenando con $y$ barajado.
+- Zona gris (train inicial): anclada. No se toca. Es idéntica en la corrida real y en todas las permutaciones.
+- Zona roja (todo el OOS): bajo $H_0$ permutamos el par $(y, r)$ con un único índice aleatorio sobre todo ese rango, de una vez. Después el walk-forward corre normalmente sobre el dataset resultante: las ventanas de training móviles van pasando por encima del rango permutado y re-entrenando con $y$ barajado.
 :::
 
-### ¿Por qué se permuta exactamente así?
+### ¿Por qué exactamente así?
 
-Hay dos detalles clave:
+Hay dos detalles clave.
 
-**1. El train inicial queda anclado.** En la corrida real, esos primeros datos sólo aparecen como *training* del primer fold; **nunca aparecen como ventana OOS**. Si los permutáramos, podrían acabar mezclados dentro de alguna ventana OOS de una corrida bajo $H_0$, inyectando observaciones (un crash, un período de alta volatilidad) que no estuvieron en la corrida real. Eso rompería la comparabilidad apples-to-apples del MCPT.
+1. **El train inicial queda anclado.** En la corrida real, esos primeros datos sólo aparecen como *training* del primer fold y no como ventana OOS en ningún fold. Si los permutáramos, podrían terminar metidos dentro de una ventana OOS bajo $H_0$, inyectando observaciones (un crash, una racha de alta volatilidad) que no estaban en la corrida real, y la comparación dejaría de ser apples-to-apples.
 
-**2. Todo el rango OOS se permuta como un único bloque.** Una alternativa sería permutar cada fold por separado, pero eso destruiría la estructura temporal de largo plazo (tendencia, volatility clustering, autocorrelación) del rango OOS y trataría a cada fold como un universo aislado. Permutar el bloque completo preserva esa estructura.
+2. **Todo el rango OOS se permuta como un único bloque.** Permutar cada fold por separado es la alternativa obvia, pero destruye la estructura temporal de largo plazo (tendencia, *volatility clustering*, autocorrelación) del rango OOS y trata a cada fold como un universo independiente. Permutar el bloque completo preserva esa estructura.
 
 En términos de código, esto se traduce en un solo `permutation` del par $(y, r)$ sobre el rango OOS, seguido del walk-forward normal:
 
@@ -196,18 +196,18 @@ def _wf_one_perm(seed, model_name, X, y, log_ret):
     return profit_factor(sig_oos, ret_oos)
 ```
 
-Lo importante no es el modelo en sí, ni cuántos folds resultan — lo importante es **qué se permuta y qué no**. El train inicial queda intacto (zona gris), el rango OOS se baraja como un solo bloque (zona roja). Eso es lo que hace al test honesto.
+Lo importante no es el modelo ni cuántos folds salen, sino qué se permuta y qué no. El train inicial queda intacto (zona gris) y el rango OOS se baraja como un solo bloque (zona roja). Esa disciplina es la que hace al test honesto.
 
 ## Estadístico: Profit Factor
 
-Para evaluar las señales usamos el **Profit Factor (PF)**:
+Para evaluar las señales usamos el Profit Factor (PF):
 
 $$
 \text{PF} = \frac{\sum_{t : \text{PnL}_t > 0} \text{PnL}_t}{\left|\sum_{t : \text{PnL}_t < 0} \text{PnL}_t\right|},
 \quad \text{PnL}_t = \text{signal}_t \cdot r_{t+1}
 $$
 
-Es la razón entre dólares ganados y dólares perdidos. Por construcción $\text{PF} > 1$ significa rentable; $\text{PF} = 1$ es break-even; $\text{PF} < 1$ es perdedor. Lo usamos porque es robusto a outliers y captura la calidad económica, no sólo la dirección.
+Es la razón entre dólares ganados y dólares perdidos. Por construcción, $\text{PF} > 1$ es rentable, $\text{PF} = 1$ es break-even y $\text{PF} < 1$ es perdedor. Lo usamos porque es robusto a outliers y mide calidad económica, no sólo dirección.
 
 # Metodología y simulación
 
@@ -332,13 +332,13 @@ Todas las semillas están fijadas. La reproducibilidad es exacta.
 
 # Mecánica de la permutación (la parte central)
 
-Aquí dedicamos una sección entera a explicar **exactamente** cómo permutamos en cada test. Es la decisión metodológica más delicada y donde se gana o se pierde la validez del MCPT.
+Aquí dedicamos una sección entera a explicar con detalle cómo permutamos en cada test. Es la decisión metodológica más delicada del trabajo: si esto se hace mal, todo lo demás vale poco.
 
 ## In-sample: permutar el par $(y, r)$ con un único índice
 
-En IS, el dataset es estático. Tenemos las matrices $X$ (features), $y$ (target $\pm 1$) y $r$ (log-retornos para evaluar PnL). Bajo $H_0$ queremos romper el link $X \to (y, r)$.
+En IS el dataset es estático. Tenemos las matrices $X$ (features), $y$ (target $\pm 1$) y $r$ (log-retornos para evaluar PnL). Bajo $H_0$ queremos romper el link $X \to (y, r)$.
 
-**La regla de oro**: $y$ y $r$ **deben permutarse con el mismo índice**. ¿Por qué? Porque $y_t = \text{sign}(r_{t+1})$. Si los permutamos por separado, romperíamos esa identidad y tendríamos targets imposibles dado los retornos. Mantener el par junto preserva la coherencia interna del "mundo permutado".
+La regla de oro es que $y$ y $r$ se deben permutar con el mismo índice. La razón es que $y_t = \text{sign}(r_{t+1})$: si los barajamos por separado, esa identidad se rompe y aparecen targets imposibles dado los retornos. Mantener el par junto preserva la coherencia interna del "mundo permutado".
 
 ```python
 def _permute_pair(y, ret, seed):
@@ -353,13 +353,13 @@ def _permute_pair(y, ret, seed):
     return y_perm, ret_perm
 ```
 
-Para cada uno de los tres modelos, una permutación significa cosas distintas:
+Para cada modelo, una permutación implica cosas distintas:
 
-| Modelo | Qué hace bajo permutación |
+| Modelo | Qué pasa bajo permutación |
 |---|---|
-| **Oráculo** | Usa la $y$ **real** (no permutada) para generar su señal. Pero la señal se evalúa contra `ret_perm`. Resultado esperado: PF colapsa a $\approx 1$ porque la señal "correcta" se aplica a retornos aleatoriamente reordenados. |
-| **LGBM** | Re-entrena sobre $(X, y_{\text{perm}})$ y predice sobre $X$. La señal se evalúa contra `ret_perm`. Si LGBM es lo bastante flexible, **igual va a memorizar la $y$ permutada** y producir un PF alto. Eso es exactamente lo que queremos detectar como overfitting. |
-| **Random** | Ignora todo. Señal aleatoria evaluada contra `ret_perm`. Distribución bajo $H_0$ centrada en PF = 1. |
+| Oráculo | Usa la $y$ real (no permutada) para generar su señal, pero la señal se evalúa contra `ret_perm`. Lo esperado es que el PF colapse a $\approx 1$, porque la señal "correcta" se aplica a retornos reordenados al azar. |
+| LGBM | Se re-entrena sobre $(X, y_{\text{perm}})$ y predice sobre $X$. La señal se evalúa contra `ret_perm`. Si LGBM tiene capacidad de sobra, va a memorizar la $y$ permutada y producir un PF alto. Justo lo que queremos detectar como overfitting. |
+| Random | Ignora todo. Señal aleatoria evaluada contra `ret_perm`. La distribución bajo $H_0$ queda centrada en PF = 1. |
 
 ```python
 def run_is_mcpt(model_name, X, y, log_ret, n_perm, n_jobs, real_seed):
@@ -392,14 +392,14 @@ def run_is_mcpt(model_name, X, y, log_ret, n_perm, n_jobs, real_seed):
     return {'real_pf': real_pf, 'perm_pfs': perm_pfs, 'p_value': p_val}
 ```
 
-## Walk-forward: permutar **una sola vez por permutación** sobre el rango OOS
+## Walk-forward: una sola permutación por corrida, sobre el rango OOS
 
-Aquí la cosa se pone más sutil. Masters es explícito: en walk-forward, **la primera ventana de training nunca aparece en OOS en la corrida original**, por lo tanto **no debe permutarse hacia adentro del rango OOS de las permutaciones**, porque podría inyectar datos atípicos (un crash, un período de alta volatilidad) que distorsionarían la comparación.
+Aquí la cosa es más fina. Masters lo dice claro: en walk-forward la primera ventana de training nunca aparece en OOS en la corrida real, así que no debe permutarse hacia adentro del rango OOS de las permutaciones; si lo hacemos, podríamos inyectar datos atípicos (un crash, un periodo de alta volatilidad) que distorsionan la comparación.
 
-Nuestra estrategia (siguiendo la opción de Masters, "do a single permutation of all market changes after the first training fold"):
+Nuestra estrategia (la opción de Masters, "do a single permutation of all market changes after the first training fold"):
 
-1. **Pre-OOS** (primeras 2,016 barras, 2000-01-03 a 2008-01-04 aprox.): **nunca se permuta**. Es el train inicial. La curva de equity es idéntica entre todas las permutaciones en esa zona.
-2. **OOS conjunto** (todo lo que viene después): se permuta **una sola vez** por permutación, con un único índice aleatorio, manteniendo $y$ y $r$ emparejados.
+1. Pre-OOS (primeras 2,016 barras, ~2000-01-03 a 2008-01-04): no se permuta. Es el train inicial. La curva de equity es idéntica en todas las permutaciones en esa zona.
+2. OOS conjunto (todo lo que viene después): se permuta una sola vez por corrida, con un único índice aleatorio, manteniendo $y$ y $r$ emparejados.
 3. Sobre el dataset resultante, corremos el walk-forward normalmente: ventana móvil de 8 años, re-entrenando cada 3 años (6 folds en total).
 
 ```python
@@ -427,7 +427,7 @@ def _wf_one_perm(seed, model_name, X, y, log_ret):
     return pf
 ```
 
-Dentro de cada fold walk-forward, el modelo se entrena con la `y_used` (potencialmente permutada) y se evalúa contra `ret_used` (consistentemente permutado). Esto rompe el link $X \to (y, r)$ **sólo dentro del rango OOS**. La parte pre-OOS sirve como "anclaje" común para todas las trayectorias.
+Dentro de cada fold walk-forward, el modelo se entrena con la `y_used` (eventualmente permutada) y se evalúa contra `ret_used` (permutado de forma consistente). Eso rompe el link $X \to (y, r)$ sólo dentro del rango OOS. La parte pre-OOS sirve de anclaje común a todas las trayectorias.
 
 ```python
 def _wf_one(model_name, X, y, log_ret, y_used, ret_used, real_seed=REAL_SEED):
@@ -465,16 +465,16 @@ def _wf_one(model_name, X, y, log_ret, y_used, ret_used, real_seed=REAL_SEED):
 ```
 
 ::: {.callout-important title="¿Por qué una sola permutación global y no una por fold?"}
-Masters discute las alternativas: permutar todo el OOS como un único bloque, o permutar cada fold por separado. Elegimos la primera porque preserva mejor las propiedades estadísticas de largo plazo (tendencia, vol, autocorrelación) del rango OOS, en lugar de tratar cada fold como un universo independiente. Masters mismo dice: "*Personally, I prefer to focus on market patterns that are universal […] my own habit is to permute all market changes after the first fold's training set as a single large group.*" (Masters)
+Masters discute las dos alternativas: permutar todo el OOS como un único bloque o permutar cada fold por separado. Optamos por la primera porque preserva mejor las propiedades estadísticas de largo plazo (tendencia, vol, autocorrelación) del rango OOS, en lugar de tratar cada fold como un universo aislado. Masters lo dice así: "*Personally, I prefer to focus on market patterns that are universal […] my own habit is to permute all market changes after the first fold's training set as a single large group.*" (Masters)
 :::
 
-::: {.callout-warning title="Detalle clave: el oráculo SIEMPRE ve la y real"}
-En la corrida real y en cada permutación, el oráculo recibe la $y$ **verdadera** (capturada vía closure), nunca la permutada. Su ventaja es ver el futuro con ruido; eso no cambia entre permutaciones. Lo que sí cambia es que sus señales se evalúan contra `ret_perm` (retornos desordenados), así que en las permutaciones el oráculo "acierta el signo" pero contra el retorno equivocado. Ese diseño es lo que da al oráculo el rol de **referencia con señal verdadera** en el experimento.
+::: {.callout-warning title="Detalle clave: el oráculo siempre ve la y real"}
+Tanto en la corrida real como en cada permutación, el oráculo recibe la $y$ verdadera (capturada vía closure), no la permutada. Su ventaja es ver el futuro con ruido y eso no cambia entre permutaciones. Lo que sí cambia es que sus señales se evalúan contra `ret_perm` (retornos desordenados), así que en las permutaciones el oráculo "acierta el signo" pero contra el retorno equivocado. Por eso el oráculo funciona como referencia de "señal verdadera" en el experimento.
 :::
 
 # Resultados e interpretación
 
-Corrimos 1,000 permutaciones por modelo en cada test (in-sample y walk-forward), en paralelo con `joblib`. Toda la simulación tardó varios minutos por modelo en LGBM; en total, $\sim$2-3 horas de cómputo. Los plots fueron guardados como PNG en `results/` y se cargan a continuación.
+Corrimos 1,000 permutaciones por modelo en cada test (in-sample y walk-forward), paralelizando con `joblib`. La simulación completa tomó algunas horas — la mayor parte se va en re-entrenar LGBM 1,000 veces. Los plots quedan guardados como PNG en `results/` y los cargamos a continuación.
 
 ## Tabla resumen
 
@@ -504,40 +504,37 @@ summary = pd.DataFrame(rows).set_index('Modelo')
 
 ![IS MCPT — Oráculo. La línea roja (PF real = 5.176) cae completamente a la derecha del abanico de permutaciones (centrado en 1). p-value = 0.0010, el mínimo posible con 1,000 permutaciones.](results/output.png){#fig-is-oracle}
 
-El oráculo tiene la señal **plantada por nosotros**. Bajo permutación, la señal del oráculo (que sigue viendo la $y$ real) se evalúa contra retornos aleatoriamente desordenados, por lo que su PF colapsa a $\approx 1$. El PF real de 5.18 está varias desviaciones a la derecha de todo el abanico. **El MCPT detecta correctamente la señal.**
+El oráculo tiene la señal plantada por nosotros. Bajo permutación, la señal del oráculo (que sigue viendo la $y$ real) se evalúa contra retornos reordenados al azar, así que su PF colapsa a $\approx 1$. El PF real de 5.18 queda varias desviaciones a la derecha de todo el abanico. El MCPT detecta correctamente la señal.
 
 ### LightGBM (overfit)
 
-![IS MCPT — LightGBM con 27 features. La distribución bajo $H_0$ está **centrada en $\approx 14$** (¡catorce!). El PF real (16.91) apenas sobresale del lado derecho. p-value = 0.044.](results/output2.png){#fig-is-lgbm}
+![IS MCPT — LightGBM con 27 features. La distribución bajo $H_0$ está centrada en $\approx 14$. El PF real (16.91) apenas sobresale del lado derecho. p-value = 0.044.](results/output2.png){#fig-is-lgbm}
 
-Este plot es el resultado más interesante de todo el reporte. **El LGBM produce un PF de 16.9 sobre datos reales, y un PF promedio de 14 sobre $y$ aleatoriamente permutadas.** Eso es Masters en acción:
+Este es el plot que más nos sorprendió al armar el experimento. El LGBM produce un PF de 16.9 sobre los datos reales, y un PF promedio de 14 sobre $y$ permutadas al azar. Es Masters en acción:
 
 > "An overfitted trading system will perform well not only on the original data but on permuted data as well. […] All in-sample performances, permuted and unpermuted, will be excellent."
 
-El modelo es tan flexible que **vuelve a memorizar el ruido** cada vez que le damos un nuevo $y$ permutado. El backtest "espectacular" (PF = 16.9) es prácticamente indistinguible de lo que se obtiene con un target aleatorio. Si un practitioner solo viera el PF real, concluiría que su sistema es genial; el MCPT muestra que casi todo ese PF es overfitting.
+El modelo es tan flexible que vuelve a memorizar el ruido cada vez que le pasamos un $y$ permutado distinto. El backtest "espectacular" (PF = 16.9) es prácticamente indistinguible de lo que se obtiene con un target aleatorio. Si alguien sólo viera el PF real, concluiría que tiene un sistema genial; el MCPT muestra que casi todo ese PF es overfitting.
 
-El p-value de 0.044 es engañosamente "significativo". La razón por la que no es 1.0 está discutida más abajo: las features están correlacionadas con la magnitud de $r_{t+1}$, lo que da una pequeña ventaja injusta a la corrida real.
+El p-value de 0.044 es engañosamente "significativo". La razón por la que no salió cercano a 1 la discutimos más abajo: hay features correlacionadas con la magnitud de $r_{t+1}$ que le dan una ventaja sutil a la corrida real.
 
 ### LightGBM clean (sólo OHLC crudo)
 
 ![IS MCPT — LGBM entrenado sólo sobre `open, high, low, close` crudos. El PF real cae en PF = 1.88, en el extremo derecho del abanico de permutaciones (centrado en 1.75). p-value = 0.018.](results/output_nuevo_1.png){#fig-is-lgbm-clean}
 
-Aquí limitamos las features a OHLC crudos para minimizar la correlación con $|r_{t+1}|$. El PF real (1.88) sigue siendo más alto que el promedio bajo $H_0$ (1.75), pero la **diferencia absoluta es chica**. El modelo aún encuentra "algo", pero el efecto es modesto.
+Aquí restringimos las features a OHLC crudos para minimizar la correlación con $|r_{t+1}|$. El PF real (1.88) sigue siendo más alto que el promedio bajo $H_0$ (1.75), pero la diferencia absoluta es chica. El modelo encuentra "algo", pero el efecto es modesto.
 
-**La diferencia entre LGBM (PF ≈ 14 bajo $H_0$) y LGBM clean (PF ≈ 1.75 bajo $H_0$) cuantifica exactamente el sesgo inducido por features correlacionadas con la magnitud del retorno.** Sin esas features, el test se comporta mucho más limpiamente.
+La diferencia entre LGBM (PF $\approx 14$ bajo $H_0$) y LGBM clean (PF $\approx 1.75$ bajo $H_0$) cuantifica el sesgo que meten las features correlacionadas con la magnitud del retorno. Sin esas features, el test se comporta mucho más limpiamente.
 
 ### Random puro
 
 ![IS MCPT — Random. La distribución bajo $H_0$ está centrada en PF = 1 (como debe). El PF real (0.96) cae en el lado izquierdo. p-value = 0.83.](results/output4.png){#fig-is-random}
 
-Control negativo: el random no tiene señal alguna. El PF real es 0.96 (ligeramente perdedor por azar) y cae cerca del centro de la distribución nula. Un p-value de 0.83 indica que no hay nada raro. **Bajo $H_0$ el p-value es aproximadamente uniforme**, así que cualquier valor entre 0 y 1 es esperable; obtener 0.83 es una realización particular del control negativo.
+Control negativo: el random no tiene señal. El PF real es 0.96 (ligeramente perdedor por azar) y cae cerca del centro de la distribución nula. Un p-value de 0.83 dice que no hay nada raro. Bajo $H_0$ el p-value es aproximadamente uniforme, así que cualquier valor entre 0 y 1 es esperable; 0.83 es simplemente una realización particular del control negativo.
 
 ## In-Sample MCPT — curvas de equity
 
-Los histogramas muestran la distribución del estadístico final (PF). Las curvas de equity muestran **trayectorias completas** del PnL acumulado: la corrida real en rojo, las 1,000 permutaciones en gris. Visualmente:
-
-- Si la curva roja se separa claramente del abanico gris → **hay señal**.
-- Si la roja queda dentro o pegada al abanico → **no hay señal distinguible**.
+Los histogramas muestran la distribución del estadístico final (PF). Las curvas de equity muestran trayectorias completas del PnL acumulado: la corrida real en rojo y las 1,000 permutaciones en gris. La lectura visual es directa: si la curva roja se separa del abanico gris hay señal, y si queda dentro o pegada al abanico no hay señal distinguible.
 
 ### Oráculo
 
@@ -545,13 +542,13 @@ Los histogramas muestran la distribución del estadístico final (PF). Las curva
 
 ### LightGBM (overfit)
 
-![IS — LightGBM: la curva real (rojo) está **dentro del abanico gris**. Termina en PnL ≈ 45, pero las permutaciones también terminan en $40-46$. Visualmente, el modelo overfit no logra distinguirse del overfitting de las permutaciones.](results/output9.png){#fig-eq-is-lgbm}
+![IS — LightGBM: la curva real (rojo) está dentro del abanico gris. Termina en PnL ≈ 45, pero las permutaciones también terminan en $40-46$. Visualmente, el modelo overfit no se logra distinguir del overfitting de las permutaciones.](results/output9.png){#fig-eq-is-lgbm}
 
-**Este es el mensaje pedagógico central**: una curva de equity que sube limpiamente de 0 a 45 a lo largo de 26 años de "backtest" puede no significar absolutamente nada. Cualquier $y$ aleatoriamente permutada produce algo equivalente cuando el modelo es lo suficientemente flexible.
+El mensaje pedagógico que más nos importa: una curva de equity que sube limpiamente de 0 a 45 a lo largo de 26 años de "backtest" puede no significar absolutamente nada. Cualquier $y$ permutada al azar produce algo equivalente cuando el modelo es lo suficientemente flexible.
 
 ### LightGBM clean
 
-![IS — LGBM clean: la curva real está en el borde superior del abanico, pero claramente metida adentro. Sin features de magnitud, el "edge" sobre las permutaciones es mucho menor.](results/output_nuevo_2.png){#fig-eq-is-lgbm-clean}
+![IS — LGBM clean: la curva real queda en el borde superior del abanico, pero metida claramente dentro. Sin features de magnitud, el "edge" sobre las permutaciones es mucho menor.](results/output_nuevo_2.png){#fig-eq-is-lgbm-clean}
 
 ### Random
 
@@ -565,13 +562,13 @@ Los histogramas muestran la distribución del estadístico final (PF). Las curva
 
 El oráculo, al ver la $y$ real en cada ventana, mantiene su ventaja también OOS. p-value mínimo.
 
-### LightGBM (overfit) — el resultado clave del reporte
+### LightGBM (overfit), el resultado central del reporte
 
-![WF MCPT — LightGBM: PF real = 1.06, **dentro** del abanico centrado en 1.04. p-value = 0.28. **El overfit no sobrevive walk-forward.**](results/output6.png){#fig-wf-lgbm}
+![WF MCPT — LightGBM: PF real = 1.06, dentro del abanico centrado en 1.04. p-value = 0.28. El overfit no sobrevive el walk-forward.](results/output6.png){#fig-wf-lgbm}
 
-Este histograma, comparado con el de IS-LGBM, es la demostración empírica más limpia de overfitting que se puede pedir. **In-sample**, el LGBM producía PF de 16.9 (con permutaciones centradas en 14). **Walk-forward**, el mismo modelo, mismas features, produce PF de 1.06 con permutaciones centradas en 1.04. Toda la "magia" del backtest era memorización de ruido. Cuando el modelo tiene que predecir realmente el futuro, no hay señal que extraer.
+Este histograma, comparado con el de IS-LGBM, es la demostración empírica más limpia de overfitting que se puede pedir. In-sample el LGBM producía PF de 16.9 (con permutaciones centradas en 14). Walk-forward, mismo modelo, mismas features, produce PF de 1.06 con permutaciones centradas en 1.04. Toda la "magia" del backtest era memorización de ruido. Cuando el modelo tiene que predecir el futuro, no hay nada que extraer.
 
-Masters describe exactamente este patrón:
+Masters describe el patrón con exactitud:
 
 > "An overfitted trading system will perform well not only on the original data but on permuted data as well. […] Such systems produce astonishing performance in the training period and yet produce completely random trades out-of-sample."
 
@@ -583,7 +580,7 @@ Sin sorpresa. El random sigue siendo random.
 
 ## Walk-Forward MCPT — curvas de equity
 
-En estas gráficas, la línea vertical punteada marca el **inicio del rango OOS** (fin de la primera ventana de training, $\approx$ 2008). Hasta ese punto todas las trayectorias son idénticas (no se permuta). A partir de ahí el abanico se abre.
+En estas gráficas la línea vertical punteada marca el inicio del rango OOS (fin de la primera ventana de training, $\approx$ 2008). Hasta ahí todas las trayectorias son idénticas porque no se permuta; a partir de ese punto el abanico se abre.
 
 ### Oráculo
 
@@ -591,9 +588,9 @@ En estas gráficas, la línea vertical punteada marca el **inicio del rango OOS*
 
 ### LightGBM
 
-![WF — LightGBM: hasta 2008 la curva (entrenamiento in-sample) sube de 0 a 17. A partir de 2008 (zona OOS), **la curva real se vuelve plana y queda completamente dentro del abanico**. Toda la "ganancia" pre-2008 era in-sample (training period).](results/output13.png){#fig-eq-wf-lgbm}
+![WF — LightGBM: hasta 2008 la curva (entrenamiento in-sample) sube de 0 a 17. A partir de 2008 (zona OOS), la curva real se vuelve plana y queda completamente dentro del abanico. Toda la "ganancia" pre-2008 era in-sample.](results/output13.png){#fig-eq-wf-lgbm}
 
-Esta es probablemente la imagen más educativa del reporte. La curva pre-OOS muestra cómo se vería un "backtest" tradicional sin walk-forward: PnL subiendo limpiamente de 0 a 17 a lo largo de 8 años. Cualquier presentación de PowerPoint vendiéndote una estrategia trading con esa curva resulta convincente. **Pero a partir del momento en que el modelo tiene que predecir realmente el futuro, no hay diferencia con permutaciones aleatorias.**
+Probablemente es la imagen más didáctica del reporte. La curva pre-OOS muestra cómo se vería un "backtest" tradicional sin walk-forward: PnL subiendo limpio de 0 a 17 a lo largo de 8 años. Cualquier presentación vendiendo una estrategia con esa curva queda convincente. Pero apenas el modelo tiene que predecir el futuro, no hay diferencia con permutaciones aleatorias.
 
 ### Random
 
@@ -601,48 +598,48 @@ Esta es probablemente la imagen más educativa del reporte. La curva pre-OOS mue
 
 ## Discusión del sesgo IS-LGBM
 
-El p-value IS de LGBM full (0.044) es bajo, pero no por la razón "buena" (señal genuina). Es por un sesgo que vale la pena explicar con precisión.
+El p-value IS de LGBM full (0.044) es bajo, pero no por la razón "buena" (señal genuina). Hay un sesgo que conviene explicar con cuidado.
 
-**Fuente del sesgo**: features como `rvol_5d`, `rvol_21d`, `atr_norm_14d` correlacionan con $|r_{t+1}|$ — saben cuándo el mercado está volátil, aunque no en qué dirección. Bajo Y-permutation, cuando barajamos $(y, r)$, los retornos grandes se asocian con días donde la volatilidad reciente era cualquiera. Pero en la corrida real, los retornos grandes coinciden con días donde la volatilidad reciente era genuinamente alta — y el modelo, sin saber el signo, **igual gana** porque concentra sus posiciones (en cualquier dirección) en días donde el retorno absoluto es grande.
+Fuente del sesgo: features como `rvol_5d`, `rvol_21d` y `atr_norm_14d` correlacionan con $|r_{t+1}|$, es decir, saben cuándo el mercado está volátil aunque no en qué dirección. Bajo Y-permutation, al barajar $(y, r)$, los retornos grandes se asocian con días donde la volatilidad reciente podía ser cualquiera. Pero en la corrida real los retornos grandes coinciden con días donde la volatilidad reciente era genuinamente alta, y el modelo, sin saber el signo, igual gana porque concentra sus posiciones (en cualquier dirección) en los días de retorno absoluto grande.
 
-Este efecto rompe el supuesto de Masters de "**equal probability under H₀**": las permutaciones no son intercambiables con la realidad porque la correlación entre features y $|r|$ es asimétrica.
+Eso rompe el supuesto de Masters de "*equal probability under $H_0$*": las permutaciones no son intercambiables con la realidad porque la correlación entre features y $|r|$ es asimétrica.
 
-La variante LGBM clean (sólo OHLC crudos, sin features de magnitud) elimina la mayor parte del sesgo. Que el p-value de LGBM clean (0.018) siga siendo bajo en IS sugiere que LightGBM tiene capacidad para encontrar **alguna** estructura incluso en OHLC crudo — probablemente serial dependencies de cortísimo plazo. Pero el WF demuestra que esa estructura no es explotable OOS.
+La variante LGBM clean (sólo OHLC crudos, sin features de magnitud) saca la mayor parte de ese sesgo. Que el p-value de LGBM clean (0.018) siga siendo bajo en IS sugiere que LightGBM también encuentra alguna estructura en OHLC crudo, probablemente *serial dependencies* de cortísimo plazo. El WF se encarga de mostrar que esa estructura tampoco es explotable OOS.
 
 # Conclusiones
 
 ## Hallazgos principales
 
-1. **El MCPT discrimina correctamente entre modelos con señal y sin señal**. El oráculo obtiene p-values $< 0.01$ tanto IS como WF. El random obtiene p-values dispersos en el rango medio, consistentes con $H_0$.
+1. El MCPT discrimina bien entre modelos con señal y sin señal. El oráculo obtiene p-values $< 0.01$ tanto IS como WF, y el random p-values dispersos en el rango medio, consistentes con $H_0$.
 
-2. **El MCPT detecta overfitting in-sample**. LightGBM produce PF in-sample de 16.9 (espectacular en un backtest tradicional), pero el promedio bajo permutación es 14: el modelo aprende ruido en cualquier $y$ que se le presente. El WF lo confirma: el mismo modelo cae a PF = 1.06 OOS, dentro de la distribución nula. **Sin permutation testing, esto sería invisible.**
+2. El MCPT in-sample detecta overfitting. LightGBM produce PF in-sample de 16.9 (espectacular en un backtest tradicional), pero el promedio bajo permutación es 14: el modelo aprende ruido sobre cualquier $y$ que se le presente. El WF lo confirma: el mismo modelo cae a PF = 1.06 OOS, dentro de la distribución nula. Sin permutation testing, todo esto sería invisible.
 
-3. **Las features correlacionadas con la magnitud del retorno contaminan el Y-permutation test**. Comparar LGBM (PF nulo $\approx 14$) contra LGBM clean (PF nulo $\approx 1.75$) cuantifica el sesgo. La consecuencia práctica: en aplicaciones reales, **la elección de features debe considerar no sólo su poder predictivo sino su correlación con $|r|$** para no romper la validez del MCPT.
+3. Las features correlacionadas con la magnitud del retorno contaminan el Y-permutation test. Comparar LGBM (PF nulo $\approx 14$) contra LGBM clean (PF nulo $\approx 1.75$) pone número al sesgo. Implicación práctica: la elección de features no sólo es un tema de poder predictivo, también lo es de correlación con $|r|$ si no queremos romper la validez del MCPT.
 
-4. **Walk-forward es el filtro definitivo**. Cualquier diferencia entre LGBM IS y LGBM WF es overfitting puro. La caída de PF 16.9 → 1.06 entre los dos tests es la firma cuantitativa del sobreajuste.
+4. Walk-forward es el filtro definitivo. La caída PF 16.9 $\to$ 1.06 entre IS y WF es la firma cuantitativa del sobreajuste.
 
 ## Respuesta a las preguntas iniciales
 
 | Pregunta | Respuesta |
 |---|---|
-| ¿El MCPT IS detecta overfitting? | Sí, pero requiere mirar la *distribución bajo $H_0$*, no sólo el p-value. La distribución del LGBM bajo $H_0$ está centrada en 14, no en 1: eso es la señal de overfitting. |
+| ¿El MCPT IS detecta overfitting? | Sí, pero hay que mirar la distribución bajo $H_0$, no sólo el p-value. La distribución del LGBM bajo $H_0$ está centrada en 14, no en 1, y esa es la firma del overfitting. |
 | ¿El MCPT WF detecta sistemas genuinos? | Sí. Oracle WF tiene p < 0.001; LGBM WF tiene p = 0.28. La separación es nítida. |
-| ¿Bajo $H_0$ el p-value es uniforme? | Aproximadamente. Random IS = 0.83, WF = 0.34. Una sola realización; para validarlo formalmente habría que repetir el experimento con muchas semillas. |
+| ¿Bajo $H_0$ el p-value es uniforme? | Aproximadamente. Random IS = 0.83, WF = 0.34. Es una sola realización; para validarlo formalmente habría que repetir el experimento con muchas semillas. |
 | ¿Las features de magnitud sesgan el test? | Sí. El sesgo es cuantificable y se elimina restringiendo features. |
 
 ## Limitaciones
 
-- **Una sola realización del control negativo (random)**. Para validar formalmente que el p-value es uniforme bajo $H_0$, habría que repetir el experimento con varios `REAL_SEED`. Computacionalmente costoso.
-- **Y-permutation supone target sin autocorrelación**. El signo del log-return diario tiene autocorrelación $\approx 0$ pero no exactamente. En timeframes intradía esto podría romperse.
-- **No estudiamos selection bias** (Masters). Si hubiéramos probado muchos modelos y reportado sólo el mejor, los p-values de arriba serían optimistas. Lo evitamos al fijar los tres modelos *a priori*.
-- **Single asset**. Generalizar a otros activos / mercados requiere repetir.
+- Una sola realización del control negativo (random). Para verificar formalmente la uniformidad del p-value bajo $H_0$ habría que repetir el experimento con varios `REAL_SEED`. Es caro computacionalmente.
+- Y-permutation supone target sin autocorrelación. El signo del log-return diario tiene autocorrelación cercana a cero, pero no exactamente cero, y en *timeframes* intradía el supuesto se puede romper.
+- No estudiamos *selection bias* (Masters). Si hubiéramos probado muchos modelos y reportado sólo el mejor, los p-values de arriba serían optimistas. Lo evitamos fijando los tres modelos *a priori*.
+- Un solo activo. Para generalizar a otros mercados habría que replicar.
 
 ## Trabajos futuros
 
-- Repetir con permutación de precios al estilo Masters para sistemas de trading puros, en lugar de Y-permutation para predictivos.
+- Repetir con permutación de precios al estilo Masters (sistemas de trading puros) en lugar de Y-permutation (modelos predictivos).
 - Bootstrap test (Masters) para comparar p-values bajo distintas formulaciones.
-- Extender al algoritmo con corrección por selection bias (Masters) para evaluar familias enteras de modelos.
-- Permutación por fold (en lugar de global) para datos con regímenes claramente cambiantes.
+- Extender al algoritmo con corrección por *selection bias* (Masters) para evaluar familias enteras de modelos.
+- Permutación por fold (en lugar de global) en datos con regímenes claramente cambiantes.
 
 # Referencias
 
@@ -814,10 +811,10 @@ def run_wf_mcpt(model_name, X, y, log_ret, n_perm=N_PERM,
 
 ## Notebook completo
 
-El notebook con todo el código ejecutable está en `mcpt_calibration.ipynb`. La simulación toma aproximadamente 2-3 horas en una máquina con 8 cores. Para reproducir resultados exactos:
+El notebook con todo el código ejecutable está en `mcpt_calibration.ipynb`. La simulación toma del orden de 2-3 horas en una máquina con 8 cores. Para reproducir los resultados:
 
 ```bash
 conda run -n rappi jupyter nbconvert --to notebook --execute mcpt_calibration.ipynb
 ```
 
-Las semillas (`RNG_SEED=67`, `REAL_SEED=7`) garantizan reproducibilidad bit-exact de la corrida real. Las permutaciones usan semillas $1, 2, \dots, m$ vía `np.random.default_rng(seed)`, así que también son reproducibles.
+Las semillas (`RNG_SEED=67`, `REAL_SEED=7`) dan reproducibilidad bit-exact de la corrida real. Las permutaciones usan semillas $1, 2, \dots, m$ vía `np.random.default_rng(seed)`, así que también son reproducibles.
